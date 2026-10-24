@@ -3,7 +3,7 @@ name: Bots
 
 on:
   push:
-    branches: [main]
+    branches: [main, review/cleanup-20261024]
     paths:
       - bots/**
       - servers/dragonfly/**

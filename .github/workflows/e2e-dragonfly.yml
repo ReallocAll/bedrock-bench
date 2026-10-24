@@ -4,7 +4,7 @@ name: E2E (Dragonfly)
 
 on:
   push:
-    branches: [main]
+    branches: [main, review/cleanup-20261024]
     paths:
       - bedrock_bench/**
       - bots/**
