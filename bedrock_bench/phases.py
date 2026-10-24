@@ -586,66 +586,50 @@ class Session:
         banner, version = console.banner_version, self.adapter.arm.version
         if banner is not None and banner != version:
             raise PhaseAbort(f"the server reports version {banner!r}, the arm is {version!r}")
-        if self.workload.bots.server_key_source == "managed-local":
-            self._resolve_server_identity(deadline)
-        elif (
-            self.workload.bots.implementation == "go"
-            and self.workload.bots.transport == "nethernet"
-            and self.adapter.name in ("bds", "endstone")
-        ):
-            self._resolve_signaling_endpoint()
+        if self.bot.pending_args:
+            self._resolve_signaling_endpoint(deadline)
 
-    def _resolve_server_identity(self, deadline: float) -> None:
-        assert self.server is not None and self.bot.binary is not None
-        try:
-            created = self.server.create_time()
-            listener = _owned_signaling_endpoint(self.server, created, self.adapter.machine.port)
-            identity = python_bots.acquire_server_identity(
-                self.bot.binary,
-                pid=self.server.pid,
-                created=created,
-                listener=listener,
-                timeout_s=deadline - self.now(),
-            )
-        except bots.BotError as exc:
-            self.record["bot"]["server_identity"] = {
-                "source": "managed-local",
-                "status": "failed",
-                "error": str(exc),
-            }
-            self.result.reasons.append(f"harness_ok: {exc}")
-            self.save()
-            raise PhaseAbort("managed-local server identity acquisition failed") from exc
-        binary = self.bot.binary
-        args = [
-            *_endpoint_args(self.bot.pending_args, identity["endpoint"]),
-            "-server-key-sha256",
-            identity["key_digest"],
-        ]
-        provenance = binary.provenance(args)
-        provenance["server_identity"] = {"source": "managed-local-process", "status": "verified", **identity}
-        self.bot = BotCommand(tuple(binary.command(args)), provenance)
-        self.record["bot"] = dict(provenance)
-        self.save()
-
-    def _resolve_signaling_endpoint(self) -> None:
+    def _resolve_signaling_endpoint(self, deadline: float | None = None) -> None:
         if self.bot.override:
             return  # Nonstandard command prefixes keep their existing address contract.
         assert self.server is not None and self.bot.binary is not None
+        managed = "server_identity" in self.bot.provenance
+        identity = None
         try:
-            listener = _owned_signaling_endpoint(self.server, self.server.create_time(), self.adapter.machine.port)
+            created = self.server.create_time()
+            listener = _owned_signaling_endpoint(self.server, created, self.adapter.machine.port)
+            if managed:
+                assert deadline is not None
+                identity = python_bots.acquire_server_identity(
+                    self.bot.binary,
+                    pid=self.server.pid,
+                    created=created,
+                    listener=listener,
+                    timeout_s=deadline - self.now(),
+                )
         except bots.BotError as exc:
+            if managed:
+                self.record["bot"]["server_identity"] = {
+                    "source": "managed-local",
+                    "status": "failed",
+                    "error": str(exc),
+                }
             self.result.reasons.append(f"harness_ok: {exc}")
             self.save()
             raise PhaseAbort("local signaling endpoint resolution failed") from exc
         binary = self.bot.binary
         args = _endpoint_args(self.bot.pending_args, listener["endpoint"])
+        if identity is not None:
+            args.extend(("-server-key-sha256", identity["key_digest"]))
         provenance = binary.provenance(args)
-        provenance.update(
-            argv=binary.command(args),
-            argv_prefix=list(binary.argv_prefix or (str(binary.path),)),
-            signaling_endpoint=listener["endpoint"],
-        )
+        if identity is not None:
+            provenance["server_identity"] = {"source": "managed-local-process", "status": "verified", **identity}
+        else:
+            provenance.update(
+                argv=binary.command(args),
+                argv_prefix=list(binary.argv_prefix or (str(binary.path),)),
+                signaling_endpoint=listener["endpoint"],
+            )
         self.bot = BotCommand(tuple(binary.command(args)), provenance)
         self.record["bot"] = dict(provenance)
         self.save()

@@ -144,7 +144,7 @@ def test_resolution_records_exact_final_command_before_launch(monkeypatch, endpo
     selections = []
     monkeypatch.setattr(phases, "_owned_signaling_endpoint", lambda *args: selections.append(args) or selected)
     monkeypatch.setattr(python_bots, "acquire_server_identity", acquire)
-    value._resolve_server_identity(20.0)
+    value._resolve_signaling_endpoint(20.0)
     assert len(selections) == 1 and selections[0][1:] == (456.25, 19672)
     assert calls[0][1] == {"pid": 123, "created": 456.25, "listener": selected, "timeout_s": 16.0}
     assert value.bot.argv[-2:] == ("-server-key-sha256", "b" * 64)
@@ -170,7 +170,7 @@ def test_failed_probe_keeps_argv_empty_and_never_reaches_idle_or_join(monkeypatc
         ),
     )
     value._start = lambda: None
-    value._boot = lambda: value._resolve_server_identity(20.0)
+    value._boot = lambda: value._resolve_signaling_endpoint(20.0)
     value._idle = lambda: pytest.fail("identity failure must precede idle")
     value._join = lambda: pytest.fail("identity failure must not launch bots")
     value.progress = lambda text: None
@@ -197,9 +197,7 @@ def test_probe_invocation_uses_installed_interpreter_and_boot_bound(monkeypatch)
     assert command[command.index("--server-pid") + 1] == "123"
     for flag, value in (
         ("--endpoint", "http://[::1]:19672"),
-        ("--listener-family", str(int(socket.AF_INET6))),
         ("--listener-address", "::1"),
-        ("--port", "19672"),
         ("--listener-fd", "7"),
     ):
         assert command[command.index(flag) + 1] == value

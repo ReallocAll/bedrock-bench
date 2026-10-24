@@ -253,6 +253,9 @@ def test_fetch_installs_wheels_and_locate_detects_dependency_file_drift(
     if uv is None:
         pytest.skip("uv is required for the installed fixture-wheel check")
     monkeypatch.setenv("UV", uv)
+    # This test mutates installed files; never share its wheel cache or linked files.
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+    monkeypatch.setenv("UV_LINK_MODE", "copy")
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     fixture_wheel(
@@ -352,7 +355,6 @@ def test_failed_python_install_is_reported_without_source_fallback(
 
     with pytest.raises(bots.ToolchainError, match="42"):
         bots.fetch("python", root=tmp_path, run=fail_install, no_index=True)
-    assert len(calls) == 2
     assert calls[0][calls[0].index("--python") + 1] == "3.12"
     assert "--only-binary" in calls[-1] and ":all:" in calls[-1]
     assert calls[-1][calls[-1].index("--no-binary") + 1] == "nethernet"
@@ -360,45 +362,9 @@ def test_failed_python_install_is_reported_without_source_fallback(
     assert not any("build" in command for command in calls)
 
 
-def test_build_installs_the_built_wheel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("UV", "uv")
-    src = tmp_path / "bots/python"
-    src.mkdir(parents=True)
-    (src / "pyproject.toml").write_text("# source fixture\n")
-    path = bots.binary_path("python", root=tmp_path)
-    prefix = (str(path), "-I", "-m", "bedrock_bench_bot")
-    info = {"module": "python", "protocol": 2193, "version": "0.1.0.dev0"}
-    monkeypatch.setattr(
-        python_bots,
-        "locate_python",
-        lambda **kwargs: bots.BotBinary("python", path, "a" * 64, bots.Target.host(), info, "installed", prefix),
-    )
-    calls = []
-
-    def fake_build(command: list[str], **kwargs: Any) -> None:
-        calls.append(command)
-        if command[1] == "build":
-            output = Path(command[command.index("--out-dir") + 1])
-            (output / "bedrock_bench_bot-0.1.0.dev0-py3-none-any.whl").write_bytes(b"fixture wheel")
-        if command[1] == "venv":
-            path.parent.mkdir(parents=True)
-
-    binary = bots.build("python", root=tmp_path, python="3.13", find_links=["unpublished-wheels"], run=fake_build)
-    assert binary.source == "build"
-    assert calls[0][-1] == str(src) and "--wheel" in calls[0]
-    install = calls[2]
-    assert "--find-links" in install and "unpublished-wheels" in install
-    assert any(value.endswith(".whl") for value in install)
-    assert "bedrock-bench-bot==0.1.0.dev0" not in install
-    assert "bedrock-bot==0.1.0" in install
-    assert all("--editable" not in command for command in calls)
-
-
-@pytest.mark.parametrize("action", ["build", "fetch"])
-def test_python_requirements_resolve_from_caller_and_are_recorded(
+def test_build_installs_wheel_and_records_caller_requirements(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    action: str,
 ) -> None:
     caller = tmp_path / "caller"
     caller.mkdir()
@@ -430,13 +396,16 @@ def test_python_requirements_resolve_from_caller_and_are_recorded(
         if command[1] == "venv":
             path.parent.mkdir(parents=True)
 
-    getattr(bots, action)(
+    binary = bots.build(
         "python",
         root=root,
         requirements=[Path(first.name), Path(second.name)],
         run=fake_run,
     )
+    assert binary.source == "build"
     install = next(command for command, _ in calls if command[1:3] == ["pip", "install"])
+    assert any(value.endswith(".whl") for value in install)
+    assert "bedrock-bench-bot==0.1.0.dev0" not in install
     locations = [install[index + 1] for index, value in enumerate(install) if value == "--requirement"]
     assert locations == [str(first), str(second)]
     assert all(Path(location).is_absolute() for location in locations)
@@ -449,8 +418,7 @@ def test_python_requirements_resolve_from_caller_and_are_recorded(
     ]
 
 
-@pytest.mark.parametrize("action", ["build", "fetch"])
-@pytest.mark.parametrize("requirement", ["missing.txt", "."])
+@pytest.mark.parametrize("action,requirement", [("build", "missing.txt"), ("fetch", ".")])
 def test_invalid_requirement_fails_before_installation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

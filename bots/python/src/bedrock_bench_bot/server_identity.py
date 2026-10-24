@@ -31,9 +31,7 @@ class IdentityProbeError(RuntimeError):
 @dataclass(frozen=True)
 class Listener:
     endpoint: str
-    family: int
     address: str
-    port: int
     fd: int
 
 
@@ -55,17 +53,19 @@ def owned_listener(pid: int, created: float, expected: Listener) -> None:
         endpoint = urlsplit(expected.endpoint)
         address = ipaddress.ip_address(expected.address)
         target = ipaddress.ip_address(endpoint.hostname or "")
+        port = endpoint.port
+        family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
         if (
             endpoint.scheme != "http"
             or not target.is_loopback
-            or endpoint.port != expected.port
+            or port is None
+            or not 1 <= port <= 65535
             or endpoint.username is not None
             or endpoint.password is not None
             or endpoint.path
             or endpoint.query
             or endpoint.fragment
             or "%" in endpoint.netloc
-            or expected.family != (socket.AF_INET6 if address.version == 6 else socket.AF_INET)
             or target.version != address.version
             or not (address.is_unspecified or address == target)
         ):
@@ -77,20 +77,16 @@ def owned_listener(pid: int, created: float, expected: Listener) -> None:
             connection.status == psutil.CONN_LISTEN
             and connection.laddr
             and (connection.family, connection.laddr.ip, connection.laddr.port, connection.fd)
-            == (expected.family, expected.address, expected.port, expected.fd)
+            == (family, expected.address, port, expected.fd)
             for connection in process.net_connections(kind="tcp")
         ):
             raise IdentityProbeError("server_listener_changed")
         inventory = [
-            connection
-            for connection in psutil.net_connections(kind="tcp")
-            if _matches(connection, str(target), expected.port)
+            connection for connection in psutil.net_connections(kind="tcp") if _matches(connection, str(target), port)
         ]
         if not inventory or any(connection.pid != pid for connection in inventory):
             raise IdentityProbeError("endpoint_owner_unknown_or_ambiguous")
-        if not any(
-            connection.family == expected.family and connection.laddr.ip == expected.address for connection in inventory
-        ):
+        if not any(connection.family == family and connection.laddr.ip == expected.address for connection in inventory):
             raise IdentityProbeError("endpoint_owner_unknown_or_ambiguous")
         if process.create_time() != created or not process.is_running():
             raise IdentityProbeError("server_process_changed_during_listener_check")
@@ -122,7 +118,7 @@ async def _http_body(http, method: str, url: str, *, data: bytes | None = None) 
 
 async def probe(pid: int, created: float, listener: Listener, timeout: float = 10.0) -> dict:
     """Return a verified digest only after the signaling peer closes and ownership is rechecked."""
-    if pid <= 0 or not math.isfinite(created) or created <= 0 or not 1 <= listener.port <= 65535:
+    if pid <= 0 or not math.isfinite(created) or created <= 0:
         raise IdentityProbeError("invalid_process_or_port")
     if not math.isfinite(timeout) or not 0 < timeout <= 10:
         raise IdentityProbeError("invalid_timeout")
@@ -220,14 +216,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--server-pid", required=True, type=int)
     parser.add_argument("--server-created", required=True, type=float)
     parser.add_argument("--endpoint", required=True)
-    parser.add_argument("--listener-family", required=True, type=int)
     parser.add_argument("--listener-address", required=True)
-    parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--listener-fd", required=True, type=int)
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args(argv)
     try:
-        listener = Listener(args.endpoint, args.listener_family, args.listener_address, args.port, args.listener_fd)
+        listener = Listener(args.endpoint, args.listener_address, args.listener_fd)
         result = asyncio.run(probe(args.server_pid, args.server_created, listener, args.timeout))
     except Exception as exc:
         code = str(exc) if isinstance(exc, IdentityProbeError) else type(exc).__name__

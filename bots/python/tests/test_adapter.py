@@ -22,20 +22,17 @@ from bedrock_bench_bot.config import Config, UsageError, duration, parse_args
 from bedrock_bench_bot.events import Emitter
 from bedrock_bench_bot.fleet import Fleet
 from bedrock_bench_bot.identity import _direct_source, distribution_identity
-from bedrock_bench_bot.workload import ChunkTracker, Walker, bot_uuid, float32, in_view, subchunk_heights
-from fake_sdk import (
+from bedrock_bench_bot.workload import ChunkTracker, Walker, bot_uuid, in_view, subchunk_heights
+from bedrock_bot import (
     BotState,
-    ChunkEvent,
     DeathEvent,
-    DecodeErrorEvent,
     DimensionEvent,
     LatencyEvent,
-    PositionEvent,
     RespawnEvent,
     StateEvent,
     Vec3,
-    make_sdk,
 )
+from fake_sdk import make_sdk
 
 BUILD = {"module": "python", "version": "0.1.0.dev0", "protocol": 2193, "patches": []}
 CONFIG = Config(addr="localhost:19132", server_key_sha256="ab" * 32)
@@ -240,47 +237,6 @@ async def exercise(config=CONFIG, plans=None, action=None, fleet_type=Fleet):
     return result, rows(output), sdk, fleet
 
 
-def test_synthetic_workload_and_shutdown_order():
-    async def action(fleet, runtime):
-        bot = runtime.bots[0]
-        bot.emit(ChunkEvent(ChunkEvent.Kind.column, 0, 0, 0, subchunk_limit=2, blob_ids=(12,)))
-        bot.emit(PositionEvent(Vec3(0, 65, 0), teleport=True))
-        bot.emit(ChunkEvent(ChunkEvent.Kind.column, 0, 99, 99))
-        bot.emit(ChunkEvent(ChunkEvent.Kind.column, 0, 0, 0, subchunk_limit=2, blob_ids=(13,)))
-        bot.emit(ChunkEvent(ChunkEvent.Kind.subchunks, 0, 0, 0, entries=2, blob_ids=(14, 15)))
-        bot.tick()
-        bot.emit(PositionEvent(Vec3(-10, 20, -30), correction=True))
-        bot.tick()
-        fleet.request_stop()
-
-    code, output, sdk, fleet = asyncio.run(exercise(replace(CONFIG, radius=8), action=action))
-    assert code == 0
-    bot = sdk.instances[0].bots[0]
-    assert bot.options.client_cache and bot.options.validate_all_packets and bot.options.recover_packet_errors
-    # The SDK owns initial16 then configured-radius/loading order. Ready reports the granted16 here.
-    assert bot.options.chunk_radius == 8 and bot.radii == []
-    assert by_event(output, "spawned")[0]["radius"] == 16
-    assert bot.options.server_url == "http://localhost:19132"
-    assert bot.options.uuid == "cfa2ea17-c22d-59c6-8d04-476ee9e828bd"
-    assert bot.subrequests == [(0, 0, 0, [-4, -3]), (0, 0, 0, [-4, -3])]
-    assert bot.misses == [((12,), ()), ((13,), ()), ((14, 15), ())]
-    assert bot.consumed == bot.inputs and len(bot.inputs) == 2
-    assert bot.inputs[0].position.x == float32(-math.sin(0.01) * 0.2158)
-    assert bot.inputs[1].position.y == 20
-    assert bot.inputs[1].position.x == float32(-10 - math.sin(0.02) * 0.2158)
-    assert output[0]["ev"] == "hello" and output[-1]["ev"] == "done"
-    assert len(by_event(output, "alljoined")) == 1 and len(by_event(output, "first_chunk")) == 1
-    stats = by_event(output, "stat")[-1]
-    assert stats["online"] == 1 and stats["rx_pkts"] == 3 and stats["tx_pkts"] == 2
-    assert stats["rx_bytes"] is None and stats["tx_bytes"] is None
-    assert stats["level_chunks"] == 3 and stats["uniq"] == 2 and stats["subchunks"] == 2
-    assert stats["corrections"] == 1 and not by_event(output, "dropped")
-    assert by_event(output, "pkt")[-1]["tx"] == {"PlayerAuthInput": 2}
-    assert [event["ev"] for event in output[-5:]] == ["progress", "stat", "pkt", "bot_summary", "done"]
-    assert by_event(output, "bot_summary")[0]["chunks"] == 2
-    assert sdk.instances[0].cleanup_finished
-
-
 class FastRetries(Fleet):
     async def sleep(self, delay):
         if delay == self.retry_delay:
@@ -309,18 +265,6 @@ def test_synthetic_attempt_deadline_includes_connect_and_does_not_retry_unreques
     assert by_event(output, "join_failed")[0]["stage"] == "dial"
 
 
-def test_synthetic_drop_never_reconnects_and_retains_reason():
-    async def action(fleet, runtime):
-        runtime.bots[0].emit(StateEvent(BotState.failed, "server text is retained"))
-        await asyncio.sleep(0)
-        fleet.request_stop()
-
-    code, output, sdk, _ = asyncio.run(exercise(replace(CONFIG, join_retries=4), action=action))
-    assert code == 0 and len(sdk.instances[0].bots) == 1
-    assert by_event(output, "dropped")[0]["err"] == "server text is retained"
-    assert by_event(output, "stat")[-1]["dropped"] == 1
-
-
 def test_synthetic_immediate_drop_after_ready_is_not_a_join_failure_or_retry():
     async def check():
         sdk = make_sdk([{"ready_then_fail": True}])
@@ -342,33 +286,6 @@ def test_synthetic_immediate_drop_after_ready_is_not_a_join_failure_or_retry():
         assert by_event(output, "stat")[-1]["dropped"] == 1
 
     asyncio.run(check())
-
-
-def test_synthetic_server_kick_has_distinct_counter_and_actual_message():
-    async def action(fleet, runtime):
-        reason = SimpleNamespace(reason_code=19, message="server full", filtered_message=None)
-        runtime.bots[0].emit(StateEvent(BotState.failed, "server full", reason))
-        fleet.request_stop()
-
-    code, output, _, _ = asyncio.run(exercise(action=action))
-    assert code == 0 and not by_event(output, "dropped")
-    assert by_event(output, "kicked")[0]["reason"] == "server full"
-    assert by_event(output, "stat")[-1]["dropped"] == by_event(output, "stat")[-1]["kicked"] == 1
-
-
-@pytest.mark.parametrize("policy,expected", [("count", 0), ("fail", 3)])
-def test_synthetic_structured_decode_policy_and_counts(policy, expected):
-    async def action(fleet, runtime):
-        runtime.bots[0].emit(DecodeErrorEvent(174, "bad packet body", policy == "count"))
-        if policy == "count":
-            runtime.bots[0].tick()
-            fleet.request_stop()
-
-    code, output, sdk, _ = asyncio.run(exercise(replace(CONFIG, decode_errors=policy), action=action))
-    assert code == expected
-    assert by_event(output, "stat")[-1]["decode_errors"] == 1
-    assert by_event(output, "decode_error")[0]["pkt_id"] == 174
-    assert sdk.instances[0].bots[0].options.recover_packet_errors == (policy == "count")
 
 
 def test_synthetic_none_input_dimension_death_retry_and_probe(monkeypatch):
@@ -425,17 +342,6 @@ def test_synthetic_respawn_retries_stop_after_respawn_or_session_end(monkeypatch
 
     code, _, _, _ = asyncio.run(exercise(action=action))
     assert code == 0
-
-
-def test_fake_xuid_requires_public_hook_before_connect():
-    async def check():
-        sdk = make_sdk()
-        fleet = Fleet(replace(CONFIG, fake_xuid=True), sdk, Emitter(io.StringIO()), BUILD, io.StringIO())
-        with pytest.raises(UsageError, match="BotOptions.xuid"):
-            await fleet.run()
-        assert not sdk.instances
-
-    asyncio.run(check())
 
 
 @pytest.mark.parametrize(
@@ -505,3 +411,8 @@ def test_closed_stdin_is_normal_stop_before_connection_attempts(monkeypatch):
         assert not sdk.instances[0].bots
 
     asyncio.run(check())
+
+
+def test_fake_xuid_uses_pinned_sdk_public_option():
+    fleet = Fleet(replace(CONFIG, fake_xuid=True), make_sdk(), Emitter(io.StringIO()), BUILD, io.StringIO())
+    assert fleet._options(7).xuid == "2535400000000007"

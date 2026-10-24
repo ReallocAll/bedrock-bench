@@ -7,7 +7,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 
-from .config import Config, UsageError
+from .config import Config
 from .events import Emitter
 from .startup import Startup, StartupOverflow
 from .workload import ChunkTracker, Walker, bot_uuid, float32, in_view, round3, subchunk_heights
@@ -23,7 +23,6 @@ class Attempt:
     stage: str = "dial"
     spawned: bool = False
     online: bool = False
-    terminal: asyncio.Event = field(default_factory=asyncio.Event)
     reason: str = ""
     position: tuple[float, float, float] = (0, 0, 0)
     dimension: int = 0
@@ -80,7 +79,6 @@ class Fleet:
         self.stop = asyncio.Event()
         self.exit_code = 0
         self.joined = self.failed = self.dropped = self.kicked = self.decode_errors = 0
-        self.resolved = 0
         self.attempts: list[Attempt] = []
         self.by_bot = {}
         self.last_spawned: dict[int, Attempt] = {}
@@ -146,14 +144,11 @@ class Fleet:
             recover_packet_errors=config.decode_errors == "count",
         )
         if config.fake_xuid:
-            if "xuid" not in self.sdk.BotOptions.__dataclass_fields__:
-                raise UsageError("-fake-xuid requires the SDK's public BotOptions.xuid identity option")
             options["xuid"] = str(2535400000000000 + index)
         return self.sdk.BotOptions(**options)
 
     def resolve(self):
-        self.resolved += 1
-        if self.resolved == self.config.n:
+        if self.joined + self.failed == self.config.n:
             self.emitter.emit("alljoined", joined=self.joined, failed=self.failed)
             if self.joined == 0:
                 self.request_stop(2)
@@ -180,7 +175,6 @@ class Fleet:
                 if attempt.spawned:
                     # Ready can be followed by a drop before wait_ready's postcondition runs.
                     # It is still a joined session and must never become a first-join retry.
-                    await attempt.terminal.wait()
                     return
                 if self.stop.is_set():
                     return
@@ -206,7 +200,6 @@ class Fleet:
                     return
                 continue
             # Ready is recorded synchronously, before later packets can arrive.
-            await attempt.terminal.wait()
             return  # A spawned connection is never reconnected automatically.
 
     async def launch(self):
@@ -397,7 +390,6 @@ class Fleet:
                         self.emitter.emit("kicked", bot=attempt.name, session=1, reason=event.reason)
                     else:
                         self.emitter.emit("dropped", bot=attempt.name, session=1, err=event.reason)
-            attempt.terminal.set()
 
     def tick(self, attempt: Attempt):
         status = attempt.bot.get_status()

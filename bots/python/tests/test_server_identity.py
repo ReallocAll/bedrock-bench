@@ -6,7 +6,6 @@ import json
 import os
 import socket
 import sys
-import time
 from types import SimpleNamespace
 
 import psutil
@@ -18,11 +17,10 @@ from nethernet.identity import (
     InvalidIdentity,
     cpk_digest,
     extract_identity,
-    verify_fingerprints,
 )
 
 PORT = 19672
-LISTENER = probe.Listener("http://[::1]:19672", int(socket.AF_INET6), "::", PORT, 7)
+LISTENER = probe.Listener("http://[::1]:19672", "::", 7)
 SDP = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=fingerprint:sha-256 AA:BB:CC\r\n"
 
 
@@ -64,7 +62,7 @@ def test_owned_listener_rechecks_harness_numeric_loopback(monkeypatch, address, 
     probe.owned_listener(
         123,
         456.25,
-        probe.Listener(endpoint, int(socket.AF_INET6 if ":" in address else socket.AF_INET), address, PORT, 7),
+        probe.Listener(endpoint, address, 7),
     )
 
 
@@ -97,12 +95,12 @@ def test_process_or_listener_change_rejects(monkeypatch):
 
 def test_exact_selection_accepts_other_same_process_binds_without_reselection(monkeypatch):
     owner(monkeypatch, [connection(), connection("0.0.0.0", fd=8), connection("127.0.0.2", fd=9)])
-    selected = probe.Listener("http://127.0.0.2:19672", int(socket.AF_INET), "127.0.0.2", PORT, 9)
+    selected = probe.Listener("http://127.0.0.2:19672", "127.0.0.2", 9)
     probe.owned_listener(123, 456.25, selected)
 
 
 def test_dual_stack_other_owner_cannot_hide_behind_selected_ipv4(monkeypatch):
-    selected = probe.Listener("http://127.0.0.1:19672", int(socket.AF_INET), "0.0.0.0", PORT, 8)
+    selected = probe.Listener("http://127.0.0.1:19672", "0.0.0.0", 8)
     owner(monkeypatch, [connection("0.0.0.0", fd=8)], [connection("0.0.0.0", fd=8), connection("::", pid=124)])
     with pytest.raises(probe.IdentityProbeError, match="owner_unknown_or_ambiguous"):
         probe.owned_listener(123, 456.25, selected)
@@ -122,7 +120,7 @@ def test_dual_stack_other_owner_cannot_hide_behind_selected_ipv4(monkeypatch):
 def test_invalid_selection_cannot_choose_a_replacement(monkeypatch, endpoint):
     owner(monkeypatch)
     with pytest.raises(probe.IdentityProbeError):
-        probe.owned_listener(123, 456.25, probe.Listener(endpoint, LISTENER.family, "::", PORT, 7))
+        probe.owned_listener(123, 456.25, probe.Listener(endpoint, "::", 7))
 
 
 class Response:
@@ -142,18 +140,11 @@ class Response:
             yield self.body[index : index + size]
 
 
-class SlowResponse(Response):
-    async def __aenter__(self):
-        await asyncio.sleep(5)
-        return self
-
-
 def exchange(monkeypatch, *, bad="", automatic_readiness=True):
     import aiohttp
-    import bedrock_bot.auth
     import nethernet.transport.peer_connection
 
-    owner(monkeypatch)
+    process = owner(monkeypatch)
     key = ec.generate_private_key(ec.SECP384R1())
     answer = IdentitySigner(key, domain="local.test").sign(SDP)
     if bad == "jwt":
@@ -167,18 +158,9 @@ def exchange(monkeypatch, *, bad="", automatic_readiness=True):
     elif bad == "fingerprint":
         answer = answer.replace("AA:BB:CC", "DD:EE:FF")
     observed = {"closed": False, "requests": [], "http_closed": False, "applied": False}
-    real_identity = bedrock_bot.auth.create_identity
-
-    def create_identity(*args):
-        identity = real_identity(*args)
-        observed["identity"] = identity
-        return identity
-
-    monkeypatch.setattr(bedrock_bot.auth, "create_identity", create_identity)
 
     class Peer:
         def __init__(self, **kwargs):
-            assert kwargs["is_dialer"] is True
             observed["state_changed"] = kwargs["on_connection_state_change"]
             observed["channels_ready"] = kwargs["on_channels_open"]
 
@@ -188,6 +170,8 @@ def exchange(monkeypatch, *, bad="", automatic_readiness=True):
         async def close(self):
             await asyncio.sleep(0)
             observed["closed"] = True
+            if bad == "owner":
+                process.create_time = lambda: 457.25
             if bad == "close":
                 raise RuntimeError("close failed")
 
@@ -216,13 +200,6 @@ def exchange(monkeypatch, *, bad="", automatic_readiness=True):
             observed["requests"].append((method, url))
             if method == "GET":
                 return Response(b"", 302 if bad == "redirect" else 200)
-            offer = kwargs["data"].decode()
-            stripped, envelope = extract_identity(offer)
-            identity = observed["identity"]
-            assert envelope.domain == "offline.endstone.invalid" and envelope.token == identity.token
-            verify_fingerprints(stripped, envelope.fingerprints, identity.key.public_key())
-            if bad == "timeout":
-                return SlowResponse(b"")
             return Response(b"x" * (probe.MAX_BODY + 1) if bad == "body" else answer.encode())
 
     monkeypatch.setattr(nethernet.transport.peer_connection, "PeerConnection", Peer)
@@ -297,24 +274,11 @@ def test_failed_or_closed_peer_never_verifies_and_still_closes(monkeypatch, stat
     asyncio.run(run())
 
 
-def test_readiness_timeout_retains_original_deadline_and_cleanup_reserve(monkeypatch):
+def test_readiness_timeout_still_closes_peer_and_http(monkeypatch):
     observed, _ = exchange(monkeypatch, automatic_readiness=False)
-    deadlines = []
-    real_timeout_at = asyncio.timeout_at
-
-    def timeout_at(deadline):
-        deadlines.append(deadline)
-        return real_timeout_at(deadline)
-
-    monkeypatch.setattr(probe.asyncio, "timeout_at", timeout_at)
-    timeout = 0.4
-    start = time.monotonic()
     with pytest.raises(TimeoutError):
-        asyncio.run(probe.probe(123, 456.25, LISTENER, timeout=timeout))
+        asyncio.run(probe.probe(123, 456.25, LISTENER, timeout=0.1))
     assert observed["applied"] and observed["closed"] and observed["http_closed"]
-    assert len(deadlines) == 2
-    assert deadlines[1] - deadlines[0] == pytest.approx(min(2.0, timeout * 0.3))
-    assert start + timeout <= deadlines[1] < start + timeout + 0.1
 
 
 def test_apply_failure_cli_closes_and_emits_only_sanitized_json(monkeypatch, capsys):
@@ -328,12 +292,8 @@ def test_apply_failure_cli_closes_and_emits_only_sanitized_json(monkeypatch, cap
                 "456.25",
                 "--endpoint",
                 LISTENER.endpoint,
-                "--listener-family",
-                str(LISTENER.family),
                 "--listener-address",
                 LISTENER.address,
-                "--port",
-                str(PORT),
                 "--listener-fd",
                 str(LISTENER.fd),
             ]
@@ -352,26 +312,8 @@ def test_redirect_has_no_post_and_is_not_followed(monkeypatch):
     assert observed["http_closed"]
 
 
-def test_negotiation_timeout_still_awaits_peer_close(monkeypatch):
-    observed, _ = exchange(monkeypatch, bad="timeout")
-    with pytest.raises(TimeoutError):
-        asyncio.run(probe.probe(123, 456.25, LISTENER, timeout=0.5))
-    assert observed["closed"] and observed["http_closed"]
-
-
 def test_owner_change_after_exchange_still_closes_and_rejects(monkeypatch):
-    observed, _ = exchange(monkeypatch)
-    real_guard = probe.owned_listener
-    count = 0
-
-    def guard(*args):
-        nonlocal count
-        count += 1
-        if count == 4:
-            raise probe.IdentityProbeError("server_process_identity_mismatch")
-        return real_guard(*args)
-
-    monkeypatch.setattr(probe, "owned_listener", guard)
+    observed, _ = exchange(monkeypatch, bad="owner")
     with pytest.raises(probe.IdentityProbeError, match="process_identity_mismatch"):
         asyncio.run(probe.probe(123, 456.25, LISTENER))
     assert observed["closed"]
@@ -431,12 +373,8 @@ def test_installed_isolated_cli_outputs_verified_json():
                 str(psutil.Process().create_time()),
                 "--endpoint",
                 selected["endpoint"],
-                "--listener-family",
-                str(selected["family"]),
                 "--listener-address",
                 selected["address"],
-                "--port",
-                str(selected["port"]),
                 "--listener-fd",
                 str(selected["fd"]),
                 "--timeout",

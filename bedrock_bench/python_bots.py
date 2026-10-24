@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 import re
@@ -14,7 +13,6 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from bedrock_bench.bots import (
     BotBinary,
@@ -61,12 +59,8 @@ def acquire_server_identity(
         str(created),
         "--endpoint",
         listener["endpoint"],
-        "--listener-family",
-        str(listener["family"]),
         "--listener-address",
         listener["address"],
-        "--port",
-        str(listener["port"]),
         "--listener-fd",
         str(listener["fd"]),
         "--timeout",
@@ -95,8 +89,6 @@ def acquire_server_identity(
         detail = code if isinstance(code, str) and re.fullmatch(r"[A-Za-z_]{1,80}", code) else "probe_failed"
         raise BotError(f"managed-local server identity failed: {detail}")
     try:
-        endpoint = urlsplit(info["endpoint"])
-        address = ipaddress.ip_address(endpoint.hostname or "")
         timestamp = datetime.fromisoformat(info["verified_at"])
         if (
             info["verified"] is not True
@@ -106,16 +98,7 @@ def acquire_server_identity(
             or info["create_time"] != created
             or not isinstance(info["key_digest"], str)
             or re.fullmatch(r"[0-9a-f]{64}", info["key_digest"]) is None
-            or endpoint.scheme != "http"
-            or not address.is_loopback
             or info["endpoint"] != listener["endpoint"]
-            or endpoint.port != listener["port"]
-            or endpoint.username is not None
-            or endpoint.password is not None
-            or endpoint.path
-            or endpoint.query
-            or endpoint.fragment
-            or "%" in endpoint.netloc
             or timestamp.tzinfo is None
             or timestamp.utcoffset().total_seconds() != 0
         ):

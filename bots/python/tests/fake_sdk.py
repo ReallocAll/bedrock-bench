@@ -4,131 +4,23 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
-from dataclasses import dataclass, field
-from enum import IntEnum
 from types import SimpleNamespace
 
-
-class BotState(IntEnum):
-    scheduled, connecting, negotiating, logging_in, spawning, ready, closing, closed, failed = range(9)
-
-
-class EventKind(IntEnum):
-    state, tick, position, chunk, death, respawn, dimension, latency, decode_error, packet_decoded = range(10)
-
-
-@dataclass
-class Vec2:
-    x: float = 0
-    y: float = 0
-
-
-@dataclass
-class Vec3:
-    x: float = 0
-    y: float = 0
-    z: float = 0
-
-
-@dataclass
-class Input:
-    position: Vec3 = field(default_factory=Vec3)
-    delta: Vec3 = field(default_factory=Vec3)
-    move: Vec2 = field(default_factory=Vec2)
-    yaw: float = 0
-    vertical_collision: bool = True
-
-
-@dataclass
-class BotOptions:
-    server_url: str = ""
-    name: str = ""
-    uuid: str = ""
-    protocol: int = 2193
-    chunk_radius: int = 16
-    client_cache: bool = True
-    client_side_generation: bool = False
-    connect_timeout_ms: int = 60000
-    spawn_timeout_ms: int = 60000
-    server_key_sha256: str = ""
-    load_screen: bool = True
-    validate_all_packets: bool = False
-    recover_packet_errors: bool = False
-
-
-@dataclass
-class StateEvent:
-    state: BotState
-    reason: str = ""
-    disconnect: object = None
-
-
-@dataclass
-class TickEvent:
-    tick: int = 1
-    lateness_us: int = 0
-
-
-@dataclass
-class PositionEvent:
-    position: Vec3
-    teleport: bool = False
-    correction: bool = False
-
-
-@dataclass
-class ChunkEvent:
-    class Kind(IntEnum):
-        column = 0
-        subchunks = 1
-
-    kind: Kind
-    dimension: int
-    x: int
-    z: int
-    entries: int = 0
-    subchunk_limit: int | None = None
-    blob_ids: tuple = ()
-
-
-class DeathEvent:
-    pass
-
-
-class RespawnEvent:
-    pass
-
-
-@dataclass
-class DimensionEvent:
-    dimension: int
-    position: Vec3
-
-
-@dataclass
-class LatencyEvent:
-    round_trip_us: int
-
-
-@dataclass
-class DecodeErrorEvent:
-    packet_id: int
-    reason: str
-    recoverable: bool
-
-
-@dataclass
-class PacketDecodedEvent:
-    packet: object
+import bedrock_bot as api
+from bedrock_bot import (
+    BotState,
+    EventKind,
+    PacketDecodedEvent,
+    RespawnEvent,
+    StateEvent,
+    TickEvent,
+    Vec3,
+    event_mask,
+)
 
 
 def frame(packet_id, **payload):
     return SimpleNamespace(header=SimpleNamespace(packet_id=packet_id), payload=SimpleNamespace(**payload))
-
-
-def event_mask(kind):
-    return 1 << kind
 
 
 class FakeBot:
@@ -140,9 +32,7 @@ class FakeBot:
         self.ready = asyncio.get_running_loop().create_future()
         self.ready.add_done_callback(lambda future: None if future.cancelled() else future.exception())
         self.interests = 0
-        self.interest_history = []
-        self.play_rx = Counter(plan.get("play_rx", {58: 3}))
-        self.inputs, self.consumed, self.misses, self.subrequests, self.radii = [], [], [], [], []
+        self.inputs, self.misses = [], []
         self.respawns = self.probes = 0
         self.respawn_calls = []
         self.respawn_pending = False
@@ -159,14 +49,6 @@ class FakeBot:
 
     def set_event_interests(self, interests):
         self.interests = interests
-        self.interest_history.append(interests)
-
-    def receive(self, packet_id, projection=None, **payload):
-        if self.status.state == BotState.ready:
-            self.play_rx[packet_id] += 1
-        self.emit(PacketDecodedEvent(frame(packet_id, **payload)))
-        if projection is not None:
-            self.emit(projection)
 
     def login_frames(self):
         return [
@@ -208,9 +90,6 @@ class FakeBot:
             self.ready.set_exception(RuntimeError("session is closed or invalidated"))
             return
         self.ready.set_result(None)
-        await asyncio.sleep(0)
-        if "after" in self.plan:
-            self.plan["after"](self)
 
     async def wait_ready(self):
         await asyncio.shield(self.ready)
@@ -237,17 +116,10 @@ class FakeBot:
         self.inputs.append(frame)
 
     def tick(self):
-        self.emit(TickEvent())
-        self.consumed.append(self.inputs[-1])  # SDK consumes input after TickEvent returns.
+        self.emit(TickEvent(1, 0))
 
     def report_blob_status(self, missing, present=()):
         self.misses.append((tuple(missing), tuple(present)))
-
-    def request_sub_chunks(self, dim, x, z, heights):
-        self.subrequests.append((dim, x, z, list(heights)))
-
-    def request_chunk_radius(self, radius):
-        self.radii.append(radius)
 
     def respawn(self, *, retry=False):
         self.respawn_calls.append(retry)
@@ -261,15 +133,10 @@ class FakeBot:
 
     def capture_statistics(self):
         rx = [0] * 1024
-        for packet_id, count in self.play_rx.items():
-            rx[packet_id] = count
         tx = [0] * 1024
-        for packet_id, count in self.plan.get("play_tx", {}).items():
-            tx[packet_id] = count
         tx[144] = self.plan.get("sent_inputs", len(self.inputs))
         all_tx = list(tx)
-        for packet_id, count in self.plan.get("preplay_tx", {1: 20000, 69: 1}).items():
-            all_tx[packet_id] += count
+        all_tx[1], all_tx[69] = 20000, 1
         return SimpleNamespace(
             packet_counts_in=[10000] * 256,
             packet_counts_out=all_tx,
@@ -313,31 +180,6 @@ def make_sdk(plans=None):
         async def wait_closed(self):
             await self.closed.wait()
 
-    sdk = SimpleNamespace(
-        **{
-            name: value
-            for name, value in globals().items()
-            if name
-            in (
-                "BotOptions",
-                "BotState",
-                "EventKind",
-                "Vec2",
-                "Vec3",
-                "Input",
-                "StateEvent",
-                "TickEvent",
-                "PositionEvent",
-                "ChunkEvent",
-                "DeathEvent",
-                "RespawnEvent",
-                "DimensionEvent",
-                "LatencyEvent",
-                "DecodeErrorEvent",
-                "PacketDecodedEvent",
-                "event_mask",
-            )
-        }
-    )
+    sdk = SimpleNamespace(**vars(api))
     sdk.Runtime, sdk.instances = Runtime, instances
     return sdk

@@ -152,6 +152,3 @@ class Startup:
         elif packet_id == 45 and int(packet.state) == 1:  # READY_TO_SPAWN
             self.check()
             self.records.append((45, ()))
-        elif packet_id == 115:
-            self.check()
-            self.records.append((115, (int(packet.create_time), bool(packet.from_server))))
