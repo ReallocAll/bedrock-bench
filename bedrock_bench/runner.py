@@ -326,19 +326,29 @@ def tag_arm(tag: str) -> Arm:
     return default.arm if default.version == arm.version else arm
 
 
-def bot_missing(adapter: ServerAdapter) -> str | None:
+def bot_missing(adapter: ServerAdapter, workload: Workload | None = None) -> str | None:
     """Why the bot for the adapter's protocol is not available on this machine, or None."""
-    if os.environ.get(ENV_BOT_CMD):
-        return None
     try:
-        module = bots.module_for_protocol(adapter.protocol)
+        module = (
+            bots.module_for_workload(adapter.protocol, workload.bots, server=adapter.name)
+            if workload is not None
+            else bots.module_for_protocol(adapter.protocol)
+        )
+        if os.environ.get(ENV_BOT_CMD):
+            if workload is not None and workload.bots.server_key_source == "managed-local":
+                return f"managed-local server identity cannot use ${ENV_BOT_CMD}"
+            return None
         found = bots.binary_path(module, bots.Target.host()).is_file()
+        if found and module == "python":
+            bots.locate(module)
     except bots.BotError as exc:
         return str(exc)
     return None if found else f"no {module} bot; run 'bbench bots build' or 'bbench bots fetch'"
 
 
-def session_arms(tags: Sequence[str], machine: Machine) -> tuple[list[Arm], list[str]]:
+def session_arms(
+    tags: Sequence[str], machine: Machine, workload: Workload | None = None
+) -> tuple[list[Arm], list[str]]:
     """The arms of a session and the servers left out, each with its reason.
 
     With tags, exactly those. Without, every server's benchmark default, except a server marked ``include = false``,
@@ -351,6 +361,10 @@ def session_arms(tags: Sequence[str], machine: Machine) -> tuple[list[Arm], list
             if arm.id in seen:
                 raise ConfigError(f"{arm.id} is given twice")
             seen.add(arm.id)
+        if workload is not None:
+            for arm in arms:
+                adapter = adapters.create(arm, machine)
+                bots.module_for_workload(adapter.protocol, workload.bots, server=adapter.name)
         return arms, []
     arms, skipped = [], []
     here = host_os()
@@ -363,7 +377,8 @@ def session_arms(tags: Sequence[str], machine: Machine) -> tuple[list[Arm], list
         if here not in platforms:
             skipped.append(f"{arm.id}: runs on {', '.join(sorted(platforms))} only")
             continue
-        missing = bot_missing(adapters.create(arm, machine))
+        adapter = adapters.create(arm, machine)
+        missing = bot_missing(adapter, workload) if workload is not None else bot_missing(adapter)
         if missing:
             skipped.append(f"{arm.id}: {missing}")
             continue
@@ -416,7 +431,11 @@ def run_session(args: argparse.Namespace) -> int:
     config_file = config.config_path(args.config)
     workload = config.load_workload(config_file)
     machine = config.load_machine(args.machine)
-    arms, skipped = session_arms(args.tags, machine)
+    try:
+        arms, skipped = session_arms(args.tags, machine, workload)
+    except bots.BotError as exc:
+        _say(f"bbench run: {exc}")
+        return ExitCode.ENV_GATE
     for line in skipped:
         _say(f"skipping {line}")
     if not arms:

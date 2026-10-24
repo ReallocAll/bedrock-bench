@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+base = "smoke"
+
+[bots]
+implementation = "python"
+transport = "nethernet"
+server_key_source = "managed-local"

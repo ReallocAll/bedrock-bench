@@ -132,6 +132,8 @@ def test_targets_and_asset_names(tmp_path: Path) -> None:
     assert str(linux) == "linux/amd64"
     assert bots.asset_name("loadbot", linux) == "loadbot-linux-amd64"
     assert bots.asset_name("loadbot", windows) == "loadbot-windows-amd64.exe"
+    assert bots.asset_name("python", linux) == "bedrock_bench_bot-0.1.0.dev0-py3-none-any.whl"
+    assert bots.asset_name("python", windows) == bots.asset_name("python", linux)
     assert bots.binary_path("loadbot", windows, tmp_path) == tmp_path / "bots/bin/windows-amd64/loadbot.exe"
     host = Target.host()
     assert host.goos in ("windows", "linux", "darwin")
@@ -223,6 +225,27 @@ def test_locate_ignores_a_stale_manifest(tmp_path: Path, monkeypatch: pytest.Mon
     assert found.info == {}
     with pytest.raises(BotError, match="not found"):
         bots.locate("loadbot", target=Target("darwin", "arm64"), root=root)
+
+
+def test_locate_reads_cross_built_manifest_on_its_target_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = Target.host()
+    path = bots.binary_path("loadbot", target, tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"cross-built loadbot")
+    binary = bots.BotBinary("loadbot", path, bots.sha256_file(path), target, {})
+    bots._write_manifest(binary)
+    queried = []
+
+    def read_version(executable: Path) -> dict[str, Any]:
+        queried.append(executable)
+        return {"module": "loadbot", "protocol": 2193, "go": "go1.27.0", "vcs": "reference"}
+
+    monkeypatch.setattr(bots, "version_info", read_version)
+    found = bots.locate("loadbot", target=target, root=tmp_path)
+    assert queried == [path]
+    assert found.info["vcs"] == "reference"
+    assert found.info["go"] == "go1.27.0"
+    assert found.sha256 == binary.sha256
 
 
 def test_build_without_go_is_a_toolchain_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

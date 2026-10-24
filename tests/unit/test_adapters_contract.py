@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from bedrock_bench import adapters, bots, config
+from bedrock_bench import adapters, bots, config, templates
 from bedrock_bench.adapters import AdapterError
 from bedrock_bench.adapters.base import (
     ALLOWED_COMPAT,
@@ -177,8 +177,10 @@ def test_server_folder_has_an_adapter(name: str) -> None:
 
 @pytest.mark.parametrize("cls", [cls for cls in REGISTERED if issubclass(cls, BdsFamily)], ids=adapter_id)
 def test_bds_hosted_servers_use_the_vanilla_server_properties(cls: type[ServerAdapter]) -> None:
-    vanilla = (config.server_dir("bds") / "server.properties").read_bytes()
-    assert (config.server_dir(cls.name) / "server.properties").read_bytes() == vanilla
+    variables = {"workload": WORKLOAD, "run": {"port": 19672, "port_v6": 19673, "server_cpu_count": 4}}
+    vanilla = templates.render(config.server_dir("bds"), "server.properties", variables)
+    hosted = templates.render(config.server_dir(cls.name), "server.properties", variables)
+    assert templates.values("properties", hosted) == templates.values("properties", vanilla)
 
 
 @every_adapter

@@ -217,7 +217,7 @@ class TestProperties:
             if entry and not entry.startswith("#"):
                 assert index > 0 and lines[index - 1].startswith("# "), entry
         keys = templates.values("properties", text)
-        assert (keys["online-mode"], keys["transport"]) == ("false", "raknet")
+        assert (keys["online-mode"], keys["transport"]) == ("false", "{{ workload.bots.transport }}")
         assert "max-threads" not in keys, "max-threads stays as shipped"
 
 

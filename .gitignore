@@ -16,6 +16,7 @@ htmlcov/
 /cache/
 /bots/bin/
 /local/
+.local/
 
 # Server binaries and downloads are fetched, never committed
 *.exe

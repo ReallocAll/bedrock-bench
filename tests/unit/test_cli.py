@@ -144,6 +144,20 @@ class TestArguments:
         args = parse("bots", "build", "--module", "legacy1001", "--target", "linux/amd64", "--target", "windows/amd64")
         assert (args.action, args.module, args.targets) == ("build", "legacy1001", ["linux/amd64", "windows/amd64"])
         assert parse("bots", "fetch").module is None
+        python = parse(
+            "bots", "fetch", "--module", "python", "--python", "3.13", "--find-links", "wheels", "--no-index"
+        )
+        assert (python.module, python.python, python.find_links, python.no_index) == (
+            "python",
+            "3.13",
+            ["wheels"],
+            True,
+        )
+        with_requirements = parse(
+            "bots", "build", "--module", "python", "--requirement", "trusted.txt", "--requirement", "other.txt"
+        )
+        assert with_requirements.requirements == [Path("trusted.txt"), Path("other.txt")]
+        assert parse("bots", "fetch").requirements == []
         with pytest.raises(SystemExit):
             parse("bots", "install")
 

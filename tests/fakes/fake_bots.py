@@ -133,6 +133,7 @@ def parse_flags(argv: Sequence[str]) -> argparse.Namespace:
         parser.add_argument(f"-{name}", f"--{name}", dest=name.replace("-", "_"), type=kind, default=default, **extra)
 
     flag("addr", str, None, "server address HOST:PORT")
+    flag("transport", choice("raknet", "nethernet"), "raknet", "transport selection")
     flag("n", int, 1, "bots")
     flag("prefix", str, "b", "name prefix")
     flag("stagger", go_duration, 0.3, "join start spacing")

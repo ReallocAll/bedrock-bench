@@ -34,18 +34,23 @@ binary with another program that speaks the same protocol (the test suite's fake
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
 import shutil
+import socket
 import threading
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
-from bedrock_bench import bots, host, process
+import psutil
+
+from bedrock_bench import bots, host, process, python_bots
 from bedrock_bench.clock import Origin, Stamp, mono_ns
 from bedrock_bench.config import ConfigError
 from bedrock_bench.console import Console
@@ -74,15 +79,13 @@ from bedrock_bench.settle import Nudge, Reteleport, Settle, SettleRules
 from bedrock_bench.workload import Workload
 
 if TYPE_CHECKING:
-    import psutil
-
     from bedrock_bench.adapters.base import ServerAdapter
 
 log = logging.getLogger(__name__)
 
 ENV_BOT_CMD = "BBENCH_BOT_CMD"
 
-#: The bot module of the current protocol; any other module flags the run ``bot_protocol_differs`` (rule R2).
+#: The current Go module's protocol; a different protocol flags the run ``bot_protocol_differs`` (rule R2).
 HEADLINE_BOT = "loadbot"
 
 #: How often waiting loops check for a dead server, a dead bot and new bot events.
@@ -117,6 +120,8 @@ class BotCommand:
     argv: tuple[str, ...]
     provenance: Mapping[str, Any]
     override: bool = False  # True when $BBENCH_BOT_CMD replaced the bot binary
+    binary: bots.BotBinary | None = None  # retained while local identity or signaling endpoint is unresolved
+    pending_args: tuple[str, ...] = ()
 
 
 def bot_command(adapter: ServerAdapter, workload: Workload, machine: Machine) -> BotCommand:
@@ -124,7 +129,7 @@ def bot_command(adapter: ServerAdapter, workload: Workload, machine: Machine) ->
 
     Raises :class:`bedrock_bench.bots.BotError` when the bot has not been built or fetched.
     """
-    module = bots.module_for_protocol(adapter.protocol)
+    module = bots.module_for_workload(adapter.protocol, workload.bots, server=adapter.name)
     args = bots.bot_args(
         workload.bots,
         addr=f"127.0.0.1:{machine.port}",
@@ -132,6 +137,9 @@ def bot_command(adapter: ServerAdapter, workload: Workload, machine: Machine) ->
         compat_flags=adapter.bot_compat_flags,
     )
     override = os.environ.get(ENV_BOT_CMD)
+    managed = workload.bots.server_key_source == "managed-local"
+    if managed and override:
+        raise ConfigError(f"managed-local server identity cannot use ${ENV_BOT_CMD}")
     if override:
         try:
             prefix = json.loads(override)
@@ -148,11 +156,103 @@ def bot_command(adapter: ServerAdapter, workload: Workload, machine: Machine) ->
             "go": None,
             "gophertunnel": None,
             "patches": [],
-            "argv": [module, *args],
+            "argv": [*prefix, *args],
+            "argv_prefix": prefix,
+            "executables": _command_files(prefix),
         }
         return BotCommand((*prefix, *args), provenance, override=True)
     binary = bots.locate(module)
+    local_go = (
+        workload.bots.implementation == "go"
+        and workload.bots.transport == "nethernet"
+        and adapter.name in ("bds", "endstone")
+    )
+    if managed or local_go:
+        provenance = binary.provenance([])
+        provenance["argv"] = []
+        provenance["argv_prefix"] = list(binary.argv_prefix or (str(binary.path),))
+        if managed:
+            provenance["server_identity"] = {"source": "managed-local", "status": "pending"}
+        return BotCommand((), provenance, binary=binary, pending_args=tuple(args))
     return BotCommand(tuple(binary.command(args)), binary.provenance(args))
+
+
+def _endpoint_args(args: Sequence[str], endpoint: str) -> list[str]:
+    """Use the already validated numeric endpoint, preserving IPv6 brackets in the bot's address flag."""
+    updated = list(args)
+    updated[updated.index("-addr") + 1] = urlsplit(endpoint).netloc
+    return updated
+
+
+def _owned_signaling_endpoint(server: psutil.Process, created: float, port: int) -> dict[str, Any]:
+    """Select one owned numeric loopback endpoint and retain its exact listener identity."""
+    try:
+        process = psutil.Process(server.pid)
+        if process.create_time() != created or process.status() == psutil.STATUS_ZOMBIE:
+            raise bots.BotError("local signaling server process identity mismatch")
+        # The harness still supports psutil5.9, where this method was named connections.
+        connections = getattr(process, "net_connections", None) or process.connections
+        owned = []
+        for connection in connections(kind="tcp"):
+            if connection.status != psutil.CONN_LISTEN or not connection.laddr or connection.laddr.port != port:
+                continue
+            address = ipaddress.ip_address(connection.laddr.ip)
+            if connection.family in (socket.AF_INET, socket.AF_INET6) and (
+                address.is_unspecified or address.is_loopback
+            ):
+                owned.append((connection.family, str(address), connection.fd))
+        if not owned:
+            raise bots.BotError("server has no owned local signaling listener")
+        selected = sorted(owned, key=lambda item: (item[0] != socket.AF_INET6, item[1]))[0]
+        family, bound, fd = selected
+        address = ipaddress.ip_address(bound)
+        host = ("::1" if family == socket.AF_INET6 else "127.0.0.1") if address.is_unspecified else str(address)
+        target = ipaddress.ip_address(host)
+        inventory = []
+        for connection in psutil.net_connections(kind="tcp"):
+            if connection.status != psutil.CONN_LISTEN or not connection.laddr or connection.laddr.port != port:
+                continue
+            address = ipaddress.ip_address(connection.laddr.ip)
+            matches = (
+                (address.is_unspecified or address == target)
+                if address.version == target.version
+                else (target.version == 4 and address.version == 6 and address.is_unspecified)
+            )
+            if matches:
+                inventory.append(connection)
+        if (
+            not inventory
+            or any(connection.pid != server.pid for connection in inventory)
+            or not any(connection.family == family and connection.laddr.ip == bound for connection in inventory)
+        ):
+            raise bots.BotError("local signaling endpoint owner is unknown or ambiguous")
+        if process.create_time() != created or not process.is_running():
+            raise bots.BotError("local signaling server process changed during listener check")
+        if not any(
+            (item.family, item.laddr.ip, item.fd) == selected
+            and item.laddr.port == port
+            and item.status == psutil.CONN_LISTEN
+            for item in connections(kind="tcp")
+            if item.laddr
+        ):
+            raise bots.BotError("local signaling server listener changed")
+        host = f"[{host}]" if family == socket.AF_INET6 else host
+        return {"endpoint": f"http://{host}:{port}", "family": int(family), "address": bound, "port": port, "fd": fd}
+    except (psutil.Error, ValueError, OSError):
+        raise bots.BotError("local signaling listener ownership is unavailable") from None
+
+
+def _command_files(prefix: Sequence[str]) -> list[dict[str, Any]]:
+    """Hash the available executable and file arguments of a nonstandard command prefix."""
+    found = []
+    for index, value in enumerate(prefix):
+        resolved = shutil.which(value) if index == 0 else value
+        if resolved is None:
+            continue
+        path = Path(resolved)
+        if path.is_file():
+            found.append({"argv_index": index, "path": str(path.resolve()), "sha256": bots.sha256_file(path)})
+    return found
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -486,6 +586,69 @@ class Session:
         banner, version = console.banner_version, self.adapter.arm.version
         if banner is not None and banner != version:
             raise PhaseAbort(f"the server reports version {banner!r}, the arm is {version!r}")
+        if self.workload.bots.server_key_source == "managed-local":
+            self._resolve_server_identity(deadline)
+        elif (
+            self.workload.bots.implementation == "go"
+            and self.workload.bots.transport == "nethernet"
+            and self.adapter.name in ("bds", "endstone")
+        ):
+            self._resolve_signaling_endpoint()
+
+    def _resolve_server_identity(self, deadline: float) -> None:
+        assert self.server is not None and self.bot.binary is not None
+        try:
+            created = self.server.create_time()
+            listener = _owned_signaling_endpoint(self.server, created, self.adapter.machine.port)
+            identity = python_bots.acquire_server_identity(
+                self.bot.binary,
+                pid=self.server.pid,
+                created=created,
+                listener=listener,
+                timeout_s=deadline - self.now(),
+            )
+        except bots.BotError as exc:
+            self.record["bot"]["server_identity"] = {
+                "source": "managed-local",
+                "status": "failed",
+                "error": str(exc),
+            }
+            self.result.reasons.append(f"harness_ok: {exc}")
+            self.save()
+            raise PhaseAbort("managed-local server identity acquisition failed") from exc
+        binary = self.bot.binary
+        args = [
+            *_endpoint_args(self.bot.pending_args, identity["endpoint"]),
+            "-server-key-sha256",
+            identity["key_digest"],
+        ]
+        provenance = binary.provenance(args)
+        provenance["server_identity"] = {"source": "managed-local-process", "status": "verified", **identity}
+        self.bot = BotCommand(tuple(binary.command(args)), provenance)
+        self.record["bot"] = dict(provenance)
+        self.save()
+
+    def _resolve_signaling_endpoint(self) -> None:
+        if self.bot.override:
+            return  # Nonstandard command prefixes keep their existing address contract.
+        assert self.server is not None and self.bot.binary is not None
+        try:
+            listener = _owned_signaling_endpoint(self.server, self.server.create_time(), self.adapter.machine.port)
+        except bots.BotError as exc:
+            self.result.reasons.append(f"harness_ok: {exc}")
+            self.save()
+            raise PhaseAbort("local signaling endpoint resolution failed") from exc
+        binary = self.bot.binary
+        args = _endpoint_args(self.bot.pending_args, listener["endpoint"])
+        provenance = binary.provenance(args)
+        provenance.update(
+            argv=binary.command(args),
+            argv_prefix=list(binary.argv_prefix or (str(binary.path),)),
+            signaling_endpoint=listener["endpoint"],
+        )
+        self.bot = BotCommand(tuple(binary.command(args)), provenance)
+        self.record["bot"] = dict(provenance)
+        self.save()
 
     def _start_tick_sampler(self) -> None:
         threads = self.samplers.threads
@@ -534,6 +697,8 @@ class Session:
     # ---- join -------------------------------------------------------------------------------------------------------
 
     def _join(self) -> None:
+        if not self.bot.argv:
+            raise PhaseAbort("the bot command has not resolved its server identity")
         spec = self.workload.phase("join")
         assert spec.cap_s is not None and self.console is not None
         start = self.marks["idle1"] if self.marks["idle1"] is not None else self.marks["ready"]
@@ -813,7 +978,7 @@ class Session:
             if t0 is not None and t1 is not None and t1 >= t0:
                 windows[name] = (t0, t1)
         record["interference"]["windows"] = interference_record(self.run_dir, self.origin, windows)
-        if self.bot.provenance.get("module") != HEADLINE_BOT:
+        if self.bot.provenance.get("protocol") != bots.MODULE_PROTOCOLS[HEADLINE_BOT]:
             self.result.flags.add(Flag.BOT_PROTOCOL_DIFFERS.value)
 
     def _collect_health(self) -> None:

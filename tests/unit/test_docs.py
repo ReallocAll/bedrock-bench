@@ -26,6 +26,7 @@ FIXED_DOCS = frozenset(
         "README.md",
         ".github/CONTRIBUTING.md",
         "bots/README.md",
+        "bots/python/README.md",
         "docs/get_started.md",
         "docs/methodology.md",
         "docs/metrics.md",

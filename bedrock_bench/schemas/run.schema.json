@@ -158,12 +158,12 @@
       }
     },
     "bot": {
-      "description": "bot module, protocol, binary sha256, build, Go and gophertunnel versions, patches and argv",
+      "description": "bot module, protocol, binary sha256 (installed identity sha256 for Python), build, versions, patches and argv",
       "type": "object",
       "additionalProperties": false,
       "required": ["module", "protocol", "argv"],
       "properties": {
-        "module": { "enum": ["loadbot", "legacy1001"] },
+        "module": { "enum": ["loadbot", "legacy1001", "python"] },
         "protocol": { "type": "integer", "minimum": 1 },
         "sha256": { "$ref": "#/$defs/sha256_or_null" },
         "version": { "type": ["string", "null"] },
@@ -171,7 +171,63 @@
         "go": { "type": ["string", "null"] },
         "gophertunnel": { "type": ["string", "null"] },
         "patches": { "$ref": "#/$defs/strings" },
-        "argv": { "$ref": "#/$defs/strings" }
+        "argv": { "$ref": "#/$defs/strings" },
+        "argv_prefix": { "$ref": "#/$defs/strings" },
+        "signaling_endpoint": { "type": "string", "description": "Owned local HTTP listener selected for Go NetherNet; no identity-verification claim" },
+        "build": {
+          "type": "object",
+          "description": "Fresh Python -version output with one installed environment inventory",
+          "properties": {
+            "environment": {
+              "type": "object",
+              "required": ["interpreter", "distributions"],
+              "properties": {
+                "interpreter": { "type": "object", "required": ["path", "sha256", "version", "implementation", "base"] },
+                "distributions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "version", "files", "direct_source"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "version": { "type": "string" },
+                      "files": { "type": "object", "additionalProperties": { "$ref": "#/$defs/sha256" } },
+                      "direct_source": { "type": ["object", "null"] }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "server_identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "status"],
+          "properties": {
+            "source": { "enum": ["managed-local", "managed-local-process"] },
+            "status": { "enum": ["pending", "verified", "failed"] },
+            "verified": { "type": "boolean" },
+            "key_digest": { "$ref": "#/$defs/sha256" },
+            "endpoint": { "type": "string" },
+            "pid": { "type": "integer", "minimum": 1 },
+            "create_time": { "type": "number", "exclusiveMinimum": 0 },
+            "verified_at": { "type": "string", "format": "date-time" },
+            "error": { "type": "string" }
+          }
+        },
+        "executables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["argv_index", "path", "sha256"],
+            "properties": {
+              "argv_index": { "type": "integer", "minimum": 0 },
+              "path": { "type": "string" },
+              "sha256": { "$ref": "#/$defs/sha256" }
+            }
+          }
+        }
       }
     },
     "workload": {

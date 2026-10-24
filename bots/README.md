@@ -1,285 +1,237 @@
 # Load bots
 
-The load bot joins simulated players to a Minecraft Bedrock server and reports what they receive. One process runs
-every bot of a run. It writes events to stdout as JSON lines and takes commands on stdin. The harness
-(`bedrock_bench/bots.py`) starts it, records the events in `bots.jsonl.gz` and stops it.
-
-Every server gets the same bot source and the same flags (rule R2 in
-[docs/methodology.md](../docs/methodology.md#rules)). The only flag an adapter may add is `-fake-xuid`.
+One client process runs every simulated player in a benchmark run. It reads
+commands from stdin and writes JSON events to stdout; diagnostics go to stderr.
+The harness starts the client, stores its events in `bots.jsonl.gz` and stops it.
 
 | Module | Purpose |
-|---|---|
-| `core/` | Everything that does not depend on the protocol: flags, events, chunk accounting, the walk, identities, sub-chunk request ranges, the stdin commands and the fleet that runs the bots. It does not import gophertunnel. |
-| `loadbot/` | Protocol 2193 (Bedrock 1.26.5x), built on upstream [gophertunnel](https://github.com/Sandertv/gophertunnel) v1.62.0. Translates packets into `core.Session` calls. |
-| `legacy1001/` | Protocol 1001, for PocketMine-MP and Allay ([Protocol 1001](#protocol-1001)). Same core, gophertunnel v1.57.1 plus one [patch](#patches). |
+| --- | --- |
+| `core/` | Shared Go flags, events, movement, chunk accounting and fleet behavior. |
+| `loadbot/` | Current protocol 2193 Go frontend, using gophertunnel. Supports RakNet and NetherNet. |
+| `legacy1001/` | Protocol 1001 Go frontend for PocketMine-MP and Allay. |
+| [python/](python/README.md) | Protocol 2193 NetherNet frontend using the installed Python SDK. |
 
-Go cannot link two versions of one module into one binary, so each protocol is its own module and binary. A new
-protocol frontend implements `core.Frontend`: one `RunSession` that dials, logs in, spawns, calls `Session.Spawned`
-and then reports packets through the other `Session` methods until the session ends.
+A session uses one implementation and the same workload flags for every server.
+Only `-fake-xuid` may be added by a server adapter. Python does not support RakNet,
+protocol 1001 or Go's manual JSON control commands.
 
-## Building
+## Build or fetch Go clients
 
-```sh
-uv run bbench bots build                          # loadbot, for this host
-uv run bbench bots build --module legacy1001      # the protocol 1001 bot
-uv run bbench bots build --target linux/amd64     # cross-compile
-uv run bbench bots fetch                          # loadbot from the release, checked against its SHA256SUMS
+```shell
+uv run bbench bots build
+uv run bbench bots build --module legacy1001
+uv run bbench bots build --target linux/amd64
+uv run bbench bots fetch
 ```
 
-`legacy1001` builds only once the gophertunnel fork tag under [Patches](#patches) is published. Until then CI and the
-release leave it out.
+Build requires Go 1.25+; each module's `go.mod` selects its toolchain. Fetch downloads
+release binaries and verifies their published checksums.
 
-Binaries land in `bots/bin/<goos>-<goarch>/`, each with a `<name>.json` manifest that records its sha256 and its
-`-version` output. The harness hashes the binary before every run and records it in `run.json`.
+Clients and manifests are stored under `bots/bin/<os>-<arch>/`. Before a run, the
+harness records the executable identity and `-version` output. Go builds use each
+module's own `go.mod` and `go.sum`, with the development workspace disabled.
+For Python installation and workload selection, see the
+[Python client guide](python/README.md).
 
-The build needs Go 1.25 or newer; each `go.mod` pins `toolchain go1.26.3`, which Go downloads when the local
-toolchain is older. `bbench bots build` runs, inside the module directory:
+### Python installation
 
-```sh
-CGO_ENABLED=0 GOFLAGS=-mod=readonly GOWORK=off \
-  go build -trimpath -buildvcs=false -ldflags "-s -w -buildid= -X main.version=<harness version> -X main.commit=<commit>" -o <out> .
+Default Python fetch downloads the exact universal adapter wheel and verifies its
+release `SHA256SUMS` before replacing the managed environment:
+
+```shell
+uv run bbench bots fetch --module python
 ```
 
-`main.commit` is the short commit of the checkout, with `-dirty` when `bots/` has uncommitted changes.
+This path is **not yet usable** until a matching release and compatible SDK/native
+dependencies are available. No bot releases are currently published. Development
+harness versions also require an explicit released tag through `BBENCH_BOTS_TAG`.
+Missing assets and checksum mismatches are errors, with no package-index fallback.
+The adapter wheel does not contain or publish the SDK and native dependencies.
 
-Release binaries come from `.github/scripts/build-go.sh`. It uses the same flags plus `GOAMD64=v1`, stamps the
-`git describe` version and the full commit, and builds `linux/amd64` and `windows/amd64`. The `bots.yml` workflow runs
-it on Linux and on Windows and fails when the two `SHA256SUMS` differ. The release tagged `v<version>` carries
-`<module>-<goos>-<goarch>[.exe]` and `SHA256SUMS`. A local `bbench bots build` stamps different values, so its bytes
-differ from the release; `bbench bots fetch` gets the release bytes.
+Python defaults to releases under `ReallocAll/bedrock-bench`; Go retains
+`EndstoneMC/bedrock-bench`. `BBENCH_BOTS_URL` overrides the release download base
+and `BBENCH_BOTS_TAG` selects a tag for either implementation.
 
-`go.work` puts `core` and `loadbot` in one workspace for development. Builds ignore it and use each module's own
-`go.mod` and `go.sum`.
+Both Python build and fetch use a managed Python 3.12 environment by default.
+`--python` selects another compatible interpreter and alone retains verified
+release fetching. Explicit `--find-links`, `--no-index` or `--requirement` inputs
+select the existing development installation path instead, for example:
 
-Tests, per module:
-
-```sh
-cd bots/core && GOWORK=off go vet ./... && GOWORK=off go test ./...
-cd bots/loadbot && GOWORK=off go vet ./... && GOWORK=off go test ./...
+```shell
+uv run bbench bots fetch --module python --python 3.14 --find-links /path/to/wheels --requirement /path/to/sdk-requirements.txt
 ```
 
-`core/testdata/golden.jsonl` pins the exact output of `-selftest-output` (regenerate with
-`go test -run TestSelftestGolden -update`); `tests/unit/test_bots.py` validates it against the schema. The loadbot
-tests include a loopback session against an in-process server built on gophertunnel's listener: login identity,
-spawn, teleport, chunk and sub-chunk requests, a correction, latency probes, a decode error and a kick.
+Use the native wheel's matching Python version. Requirements paths resolve from
+the caller's directory and their hashes are recorded. `--no-index` disables index
+lookups, not explicitly requested Git/network sources. Build uses the same
+installer, dependency checks and installed-file identity capture. Direct adapter
+dependencies are pinned in its metadata; this is not a full transitive lock.
+
+Use `configs/smoke-python.toml` or `configs/spread-100-python.toml` for the existing
+workload with Python/NetherNet and managed local identity. See the
+[Python guide](python/README.md#select-a-workload) for identity requirements.
+
+### Protocol 1001
+
+The legacy module requires the fork tag declared by its module metadata.
 
 ## Flags
 
-```sh
+The harness normally supplies these from the workload config. For a manual Go
+session:
+
+```shell
 loadbot -addr 127.0.0.1:19672 -n 4 -prefix a
 ```
 
-Type `quit` (or press Ctrl+C) to stop; the bot then prints its summaries and exits. Ending stdin also stops it. In a
-run, the harness builds the flags from the `[bots]` table of the config, `-n` from the config's bot count and `-csg`
-from its `[server]` table (see [`configs/spread.toml`](../configs/spread.toml)). `run.json` records the full argv.
+Type `quit` or end stdin to stop. `-version` prints build information;
+`-selftest-output` emits synthetic events and exits without connecting.
 
 | Flag | Default | Meaning |
-|---|---|---|
-| `-addr HOST:PORT` | required | Server address. There is no default port. |
+| --- | --- | --- |
+| `-addr HOST:PORT` | required | Server address; no default port. |
+| `-transport` | `raknet` (Go), `nethernet` (Python) | Python requires NetherNet. |
+| `-server-key-sha256` | empty | Required verified server identity pin for Python. |
 | `-n` | 1 | Number of bots. |
-| `-prefix` | `b` | Name prefix; bots are named prefix + index with at least two digits (`a00`, `a07`, `a123`). |
-| `-stagger` | 300ms | Spacing between join starts. 100 bots take about 30 s to start. |
-| `-csg` | false | Claim client-side chunk generation support and memory tier 4 in the login. Every config leaves it off. |
-| `-radius` | 16 | Chunk radius. The spawn sequence always requests 16; another value is requested right after spawn. Servers clamp it to their view distance. |
-| `-loadscreen` | true | Send loading screen start and end after spawn and after every dimension change. Without the end message BDS keeps the player on its loading screen and ignores its movement: the bot never falls, gets no corrections and receives no new chunks. |
-| `-walk` | `circle` | `circle`: walk 0.2158 blocks per tick and turn 0.01 rad per tick (a circle about 43 blocks across every 628 ticks), at constant height. `none`: stand still. Input is sent at 20 Hz either way. |
-| `-spawn-timeout` | 60s | Deadline for dial, login and spawn of one join attempt. |
-| `-join-retries` | 0 | Extra attempts for a failed first join, 3 s apart. |
-| `-fake-xuid` | false | Send XUID 2535400000000000 + index, for servers that derive the player UUID from the XUID. |
-| `-identity-seed` | `bedrock-bench` | Name space of the bot UUIDs ([What a bot does](#what-a-bot-does)). |
-| `-control` | false | Accept the JSON commands below on stdin, for manual tests. The harness never sets it. |
-| `-progress-interval` | 5s | Interval of `progress` events. |
-| `-stat-interval` | 10s | Interval of `stat` events (and `rtt` events when probing). |
-| `-pkt-interval` | 60s | Interval of `pkt` events. |
-| `-probe-bots` | 0 | The bots with the lowest indices send a latency probe every second. |
-| `-decode-errors` | `count` | `count`: report and continue. `fail`: stop and exit 3 at the first. |
-| `-selftest-output` | | Print one event of every kind with made-up values and exit. Used to check the schema. |
-| `-version` | | Print build information as JSON and exit. |
+| `-prefix` | `b` | Names use prefix plus an index of at least two digits. |
+| `-stagger` | 300ms | Time between first join starts. |
+| `-csg` | false | Advertise client-side chunk generation; benchmark configs leave it off. |
+| `-radius` | 16 | Requested chunk radius; the server may clamp it. Spawn initially requests 16. |
+| `-loadscreen` | true | Loading-screen messages for spawn and dimension changes. BDS uses completion to enable movement. |
+| `-walk` | `circle` | `circle` moves 0.2158 blocks and turns 0.01 radians per tick; `none` stands still. Both schedule input at 20 Hz. |
+| `-spawn-timeout` | 60s | Dial, login and spawn deadline per attempt. |
+| `-join-retries` | 0 | Additional failed-first-join attempts, three seconds apart. |
+| `-fake-xuid` | false | Declare offline XUID 2535400000000000 + index. |
+| `-identity-seed` | `bedrock-bench` | Namespace seed for deterministic player UUIDs. |
+| `-control` | false | Go-only manual JSON control commands. |
+| `-progress-interval` | 5s | Progress reporting interval. |
+| `-stat-interval` | 10s | Statistics and enabled RTT reporting interval. |
+| `-pkt-interval` | 60s | Packet delta reporting interval. |
+| `-probe-bots` | 0 | Lowest-index bots that send a latency probe each second. |
+| `-decode-errors` | `count` | Report recoverable errors and continue, or `fail` to exit 3 at the first error. Fatal framing/transport errors still close a session. |
 
-### Commands on stdin
+### Commands and exit codes
 
-`quit` is always accepted. With `-control`, each line may also be one JSON command. A bot is addressed by name
-(`"bot"`) or index (`"i"`).
+Both implementations accept `quit` and stop on EOF. Go additionally accepts these
+JSON lines with `-control`; address a bot by name (`bot`) or index (`i`):
 
 | Command | Effect |
-|---|---|
-| `{"op":"reconnect","bot":"a07"}` | Close the session (`left`) and rejoin after `delay_ms` (default 3000). Also brings back a bot that was disconnected. |
-| `{"op":"disconnect","i":7}` | Close the session (`left`) and stay offline until a `reconnect`. |
-| `{"op":"radius","radius":8}` | Request a chunk radius, for one bot when addressed, otherwise for every online bot. |
-| `{"op":"stop"}` | Same as `quit`. |
+| --- | --- |
+| `{"op":"reconnect","bot":"a07"}` | Close and reconnect after `delay_ms` (default 3000), including an offline bot. |
+| `{"op":"disconnect","i":7}` | Close and remain offline. |
+| `{"op":"radius","radius":8}` | Request a radius for the addressed bot, or every online bot if unaddressed. |
+| `{"op":"stop"}` | Stop the process. |
 
-Malformed or unknown lines are ignored with a note on stderr.
+Unknown or malformed input is ignored with a diagnostic. Exit 0 means normal
+stop; 1 means invalid flags or a client failure; 2 means every first join failed;
+3 means `-decode-errors fail` stopped the client.
 
-### Exit codes
+## Workload behavior
 
-| Code | Meaning |
-|---|---|
-| 0 | Stopped normally. |
-| 1 | Bad flags. |
-| 2 | Every first join failed. The bot stops by itself right after `alljoined`. |
-| 3 | A decode error with `-decode-errors fail`. |
-
-### What a bot does
-
-- **Login.** Offline mode, self-signed, over RakNet. The UUID is UUIDv5(name space, bot name), where the name space
-  is `-identity-seed` itself when it is a UUID and UUIDv5(the RFC 9562 URL name space, seed) otherwise. In Python:
-  `uuid.uuid5(uuid.uuid5(uuid.NAMESPACE_URL, "bedrock-bench"), "a07")`. Identities are the same in every run, so
-  servers that keep player data see the same players. Resource packs are never downloaded.
-- **Chunks.** The client blob cache is on and every blob is reported missing, so the server always sends full chunk
-  data: the most work a server can be asked for. When a chunk asks for sub-chunk requests, the bot requests exactly
-  the announced number of sub-chunks from the bottom of the dimension (overworld from -4, nether and end from 0), or
-  the whole column when no limit is given.
-- **Movement.** The bot starts with yaw = index x 137.508 degrees, so neighbouring bots walk in different
-  directions. It sends one `PlayerAuthInput` per tick with its position; it never changes its own height. A server
-  teleport is acknowledged in the next input; a correction replaces the bot's position.
-- **Upkeep.** The bot answers latency requests from the server, asks to respawn after a death (up to four times,
-  10 s apart), and acknowledges dimension changes one second after they arrive.
+- **Identity:** offline, self-signed login. Player UUIDs are UUIDv5(namespace,
+  name). A UUID seed is used directly; other seeds use UUIDv5 of the URL namespace.
+  The same seed and names identify the same players across runs. No resource packs
+  are downloaded.
+- **Chunks:** the blob cache is enabled, but every requested blob is reported
+  missing so the server sends full data. Sub-chunk requests start at -4 in the
+  overworld and 0 in other dimensions, honoring an announced limit or requesting
+  the whole column.
+- **Movement:** initial yaw is index × 137.508 degrees. Input uses the latest
+  server position and a fixed client height; teleports are acknowledged and
+  corrections replace the position.
+- **Upkeep:** answer server latency requests, acknowledge dimension changes and
+  request respawn after death, with at most four attempts ten seconds apart.
 
 ## Events
 
-One JSON object per line on stdout, validated by `bedrock_bench/schemas/bot-event.schema.json`. Every event has `v`
-(1), `ev`, `t` (UTC epoch milliseconds) and `mono_ms` (bot monotonic milliseconds since start); the harness adds
-`rx_ns` when it stores the line. Human-readable diagnostics go to stderr.
+Events follow [bot-event.schema.json](../bedrock_bench/schemas/bot-event.schema.json).
+Each line has `v`, `ev`, UTC epoch milliseconds `t` and monotonic `mono_ms` since
+client start. The harness adds receipt timestamp `rx_ns`.
 
-### Accounting
+A chunk is a column keyed by dimension and chunk coordinates. Before the first
+teleport, received columns belong to the spawn area and do not enter the view
+tracker. `uniq` counts distinct tracked columns. `in_view` counts tracked columns
+in the current dimension within a Euclidean radius of the granted radius + 1,
+centered on the player's current chunk. Negative coordinates use floor division.
+Chunks streaming from an old view do not count toward the current view.
 
-- A **chunk** is a column keyed by (dimension, x, z). Chunks received before the bot's first teleport belong to the
-  spawn area and are ignored.
-- **uniq** is the number of distinct chunks a session received after its first teleport.
-- **in_view** is the number of those chunks within radius + 1 chunks (Euclidean) of the chunk the bot stands in,
-  in its current dimension, using the radius the server granted. Chunks of an old view that a server keeps
-  streaming after a teleport do not count. A disc of radius 10 holds 317 columns.
-- **first_chunk** is the time from a session's first teleport to the first chunk that is in view.
-- **corrections** counts movement corrections from the server.
-- **rx_bytes** and **tx_bytes** count UDP payload bytes, RakNet framing and resends included.
-- A **decode error** is a packet or batch the bot could not decode. Socket errors when a server goes away are not
-  decode errors; they end the session as `dropped`. Decode errors make a run invalid.
+`first_chunk` measures the first in-view arrival after the first teleport.
+Per-bot progress and summaries describe a session and reset on rejoin. Application
+packet counters accumulate across spawned sessions; failed
+join attempts and login traffic do not contribute. Promoted pre-spawn application
+packets count only after that attempt spawns. Application counters exclude
+incoming Disconnect packets.
 
-Per-bot numbers (`progress`, `bot_summary`, `first_chunk`) describe one session and start from zero after a
-rejoin. Fleet counters in `stat` add up over all sessions.
+RakNet byte counters measure UDP payloads, including framing and resends.
+NetherNet byte counts are unknown: Python emits `null`; Go emits zero, which must
+not be interpreted as measured zero. Socket closure is a drop, not a decode
+error. Decode errors invalidate a benchmark run.
 
-| Event | Fields | When |
-|---|---|---|
-| `hello` | `build`, `flags`, `intervals_ms` | First line. `build` is the `-version` output; `flags` holds every flag's effective value. |
-| `dial` | `bot`, `i` | A first-session join attempt starts. |
-| `spawned` | `bot`, `i`, `session`, `join_ms`, `radius`, `dim` | A session reached the world. `join_ms` is measured on the bot clock from the attempt's start. |
-| `join_failed` | `bot`, `i`, `stage` (`dial`, `login`, `spawn`), `err`, `session`, `attempt`, `final` | One failed attempt. `final` is true when the bot gives up; only final failures of the first session count as `failed`. |
-| `tp` | `bot`, `pos`, `dim`, `n` | The server teleported the bot; `n` counts teleports in the session. |
-| `first_chunk` | `bot`, `dt_ms` | See [Accounting](#accounting). |
-| `progress` | `rows` | Every progress interval: `[bot, uniq, in_view, x, y, z, dim, corrections, teleports]` per bot that has started. Position and dimension are null until the bot's first teleport. |
-| `stat` | see below | Every stat interval. |
-| `pkt` | `rx`, `tx` | Packets received and sent since the previous `pkt`, by gophertunnel packet name (`LevelChunk`, `MoveActorDelta`, ...). |
-| `rtt` | `n`, `p50_ms`, `p99_ms`, `max_ms`, `lost` | Latency probes since the previous `rtt`, nearest-rank percentiles. Only with `-probe-bots`. |
-| `died`, `respawned` | `bot`, `session` | Death and respawn. |
-| `dim` | `bot`, `dim`, `session` | Dimension change. |
-| `left` | `bot`, `session` | A `reconnect` or `disconnect` command closed the session. Only with `-control`. |
-| `rejoin` | `bot`, `session` | A rejoin attempt starts (sessions after the first). Only with `-control`. |
-| `dropped` | `bot`, `session`, `err` | The connection failed. |
-| `kicked` | `bot`, `session`, `reason` | The server disconnected the bot; `reason` is the server's message. |
-| `decode_error` | `bot`, `pkt_id`, `err`, `total` | `pkt_id` is null when the packet is unknown. The first 10 are reported, then at most one per second; `total` and `stat.decode_errors` count all of them. |
-| `alljoined` | `joined`, `failed` | Once, when every bot has spawned or finally failed its first join. |
-| `bot_summary` | `bot`, `uniq`, `in_view`, `chunks`, `corrections`, `first_seen_ms` | At shutdown, for each bot's last session that reached the world. `chunks` counts chunk packets after the first teleport, resends included. `first_seen_ms` holds one entry per chunk in view, in arrival order: milliseconds since the first teleport, delta-encoded. |
-| `done` | | Last line. |
+| Event | Meaning and principal fields |
+| --- | --- |
+| `hello` | Build, effective flags and reporting intervals. |
+| `dial` | Join attempt started: `bot`, `i`. |
+| `spawned` | Joined the world: `bot`, `i`, `session`, `join_ms`, `radius`, `dim`. |
+| `join_failed` | Failed attempt: `stage`, `err`, `attempt`, `final`; only final first-session failures count as failed bots. |
+| `tp`, `dim` | Teleport or dimension update. |
+| `first_chunk` | First in-view chunk delay, `dt_ms`. |
+| `progress` | Rows: `[bot, uniq, in_view, x, y, z, dim, corrections, teleports]`; coordinates are null before the first teleport. |
+| `stat` | Current fleet state and cumulative counters. |
+| `pkt` | `rx` and `tx` packet deltas since the previous report, by packet name. |
+| `rtt` | Probe count, nearest-rank p50/p99/max milliseconds and lost probes; enabled with `-probe-bots`. |
+| `died`, `respawned` | Death and respawn. |
+| `left`, `rejoin` | Go manual control closed a session or started a later session. |
+| `dropped`, `kicked` | Transport failure or server disconnect, with its reason. |
+| `decode_error` | `pkt_id`, `err`, cumulative `total`; first ten errors are reported, then at most one per second. |
+| `alljoined` | Every bot has spawned or exhausted its first-join attempts: `joined`, `failed`. |
+| `bot_summary` | Last spawned session's `uniq`, `in_view`, `chunks`, `corrections`, `first_seen_ms`. |
+| `done` | Final event. |
 
-`stat` fields: `online` (sessions in the world now), `joined`, `failed`, `dropped` (sessions the bot did not end,
-kicks included), `kicked`, `left`, `rejoins`, `rejoin_failed`, `deaths`, `rx_pkts`, `tx_pkts`, `rx_bytes`,
-`tx_bytes`, `corrections`, `level_chunks` (every chunk packet, spawn area included), `subchunks` (sub-chunk entries),
-`uniq` (summed over sessions), `in_view` (now, summed over online bots) and `decode_errors`. All but `online` and
-`in_view` are cumulative.
+`stat` includes `online`, `joined`, `failed`, `dropped`, `kicked`, `left`,
+`rejoins`, `rejoin_failed`, `deaths`, packet and byte totals, `corrections`,
+`level_chunks`, `subchunks`, `uniq`, `in_view` and `decode_errors`. `online` and
+`in_view` are current values; the others are cumulative. Implementation-specific
+optional measurements are described in the [Python guide](python/README.md#measurements).
 
-Shutdown (`quit`, `stop`, end of stdin, SIGINT, SIGTERM, Ctrl+Break, or a failed write to stdout) writes a last
-`progress`, `stat`, `pkt` (and `rtt`), closes every session within 10 s, then writes `bot_summary` for each bot and
-`done`.
+In summaries, `chunks` includes duplicate tracked chunk packets. `first_seen_ms`
+is one entry per currently in-view column, in first-arrival order, encoded as
+millisecond deltas since the first teleport. Shutdown emits final reports, closes
+sessions, writes per-bot summaries and then `done`.
 
-## Protocol 1001
+## Contributing
 
-`legacy1001` is the bot for servers that speak protocol 1001: `pocketmine@5.44.3` and `allay@0.14.0`. Every other
-server gets `loadbot`. Runs with it are flagged `bot_protocol_differs` (rule R2).
+A Go frontend implements `core.Frontend`: establish a session, call
+`Session.Spawned`, report packets through `Session` and return when the session
+ends. Protocol versions with incompatible dependency versions remain separate
+Go modules.
 
-It is `loadbot` built against gophertunnel v1.57.1, the last release for protocol 1001. PocketMine-MP 5.44.3 rejects
-that release's offline login, so the module carries the login back-port listed under [Patches](#patches). Upstream
-has no release that speaks protocol 1001 with the newer login, so there is nothing to wait for upstream. Flags,
-events, the stdin commands and all bot behaviour come from `core`. The non-test files mirror `loadbot`'s one for one;
-the package comment in `legacy1001/main.go` lists where the older gophertunnel API makes them differ. A behaviour
-change to `loadbot` must be made here too.
+Run checks in each affected module with the workspace disabled:
 
-```sh
-cd bots/legacy1001
+```shell
+cd bots/core
 GOWORK=off go vet ./...
 GOWORK=off go test ./...
 ```
 
-`GOWORK=off` is required. `go.work` covers `core` and `loadbot` only, because a workspace resolves one gophertunnel
-version for all its modules. The module downloads gophertunnel from the fork tag described under
-[Patches](#patches), so that tag must be published before it builds. Until then PocketMine-MP and Allay cannot run,
-and a `bbench run` without tags skips them.
+Repeat for `loadbot` or `legacy1001` as needed. Shared event fixtures are validated
+against the JSON schema; protocol frontend tests include controlled login and
+packet handling. Real-server smoke tests are separate from these tests.
 
-`TestLoginRequestFormat` checks the login a server receives against the format PocketMine-MP expects, and fails
-against unpatched v1.57.1. `TestLoopbackSession` runs a whole session against an in-process protocol 1001 server.
-Neither needs PocketMine-MP; the real-server check is `uv run bbench smoke configs/smoke.toml pocketmine@5.44.3`
-(4 bots) with no decode errors.
+### Patches
 
-## Patches
+The current-protocol frontend uses upstream gophertunnel without carried patches.
+The legacy frontend carries an [offline-login backport](legacy1001/0001-login-backport.patch)
+from upstream [#468](https://github.com/Sandertv/gophertunnel/pull/468) and
+[#481](https://github.com/Sandertv/gophertunnel/pull/481). Dependency versions and
+fork tags belong to each module's `go.mod` and `go.sum`.
 
-`loadbot` builds against upstream gophertunnel v1.62.0 with no `replace` directive and carries no patches.
-`legacy1001` carries one:
+#### Policy
 
-| Patch | Change | Upstream | Failing case | Drop when |
-|---|---|---|---|---|
-| `legacy1001/0001-login-backport.patch` | The offline login in the format gophertunnel adopted in v1.58.0: the self-signed identity token gets the multiplayer audience and carries the player UUID as `leguuid`, and the client data sends `FilterProfanity`, `ClientEditorConnectionIntent`, `ClientIsEditorCapable` and `ProfileHash` instead of `IsEditorMode`. | Back-port of [#468](https://github.com/Sandertv/gophertunnel/pull/468) (654cd5f) and the `ProfileHash` field of [#481](https://github.com/Sandertv/gophertunnel/pull/481) (b36ddad), both released in v1.58.0 | `TestLoginRequestFormat` | The pinned PocketMine-MP accepts the protocol `loadbot` speaks. `legacy1001` itself goes only when no pinned server (PocketMine-MP, Allay) speaks protocol 1001. |
+A carried patch needs a failing regression, an upstream report and an explicit
+removal condition. Keep the patch file, immutable fork tag, module checksums and
+`carriedPatches` declaration consistent. Published Go module tags must not be
+rewritten. Remove the login backport when the legacy server accepts the current
+frontend; remove the legacy frontend only when no supported server needs it.
 
-Upstream changes to the same files that the back-port leaves out:
-
-- `ClientData.Nonce` ([#501](https://github.com/Sandertv/gophertunnel/pull/501)). It is `omitempty` and the bot
-  never sets it, so it never reaches the wire.
-- The login parsing changes made before v1.58.0 (#474 and the `Validate` part of #481). The bot never parses a login.
-
-Neither bot carries the changes of the modified gophertunnel snapshot that Endstone's earlier benchmark scripts
-used. The radius is requested with a normal `RequestChunkRadius` packet after spawn (`-radius`), and
-`TestSubChunkHeightMapWireLayout` in `loadbot` shows that upstream decodes the sub-chunk height maps the snapshot
-patched. If a pinned server sends something upstream cannot decode, the bot reports a `decode_error` naming the
-packet, the run is invalid, and the fix goes through the policy below.
-
-### Policy
-
-A patch is carried only when all of these exist:
-
-1. **A failing case.** A test in the bot module that fails against upstream, usually a decode test built from the
-   bytes a pinned server sends, and a reproduction: the bot with `-decode-errors fail` exits 3 against that server.
-2. **An upstream report.** An issue or pull request on gophertunnel, linked in the table above.
-3. **A drop condition.** The upstream release, or server change, that makes the patch unnecessary.
-
-A carried patch lives in three places that must agree:
-
-- `bots/<module>/NNNN-<topic>.patch`, applied in order to the upstream tag;
-- a public fork tag `v<upstream version>-bench.<N>` of `github.com/EndstoneMC/gophertunnel` holding upstream plus
-  exactly those patches, referenced by a `replace` in the module's `go.mod`;
-- `carriedPatches` in the module's `main.go`, so `-version`, the `hello` event and `run.json` list it.
-
-The module's `go.sum` pins the hash of the tag's tree, so Go refuses a tag with any other content: the download
-fails with a checksum mismatch. CI does not rebuild the tag from upstream and the patch files; whoever publishes a
-tag applies the patches to a clean upstream checkout, as below. Patches keep gophertunnel's MIT licence and
-copyright.
-
-Publishing the `legacy1001` tag:
-
-```sh
-git -c core.autocrlf=false clone https://github.com/EndstoneMC/gophertunnel
-cd gophertunnel
-git switch --detach v1.57.1
-git apply ../bedrock-bench/bots/legacy1001/0001-login-backport.patch
-git commit -am "Apply bedrock-bench patches for protocol 1001"
-git tag v1.57.1-bench.1
-git push origin v1.57.1-bench.1
-
-cd ../bedrock-bench/bots/legacy1001
-GOWORK=off go mod download   # a go.sum mismatch means the tag is not upstream + patches
-GOWORK=off go test ./...
-```
-
-A pushed tag is permanent: the Go module proxy and checksum database keep the first content they see. To change the
-patches, edit the files in `bots/legacy1001/`, publish the next tag (`v1.57.1-bench.2`), point the `replace` in its
-`go.mod` at it, run `GOWORK=off go mod tidy` there, and update `carriedPatches` in its `main.go`, all in one commit.
-
-Before each release the maintainer runs a decode smoke against the real servers, because CI never downloads BDS; see
-[.github/CONTRIBUTING.md](../.github/CONTRIBUTING.md#releasing).
+See [contributor guidance](../.github/CONTRIBUTING.md) for release checks and
+[methodology](../docs/methodology.md) for shared workload rules.

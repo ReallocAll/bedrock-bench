@@ -286,7 +286,8 @@ class TestBotCommand:
         assert command.argv[:2] == ("python", "fake_bots.py")
         assert command.argv[2:4] == ("-addr", f"127.0.0.1:{machine.port}")
         assert command.provenance["module"] == "loadbot"
-        assert command.provenance["argv"] == ["loadbot", *command.argv[2:]]
+        assert command.provenance["argv"] == list(command.argv)
+        assert command.provenance["argv_prefix"] == ["python", "fake_bots.py"]
         assert "-n" in command.argv and command.argv[command.argv.index("-n") + 1] == "4"
 
     @pytest.mark.parametrize("value", ["[]", "python", '{"a": 1}', "[1]"])

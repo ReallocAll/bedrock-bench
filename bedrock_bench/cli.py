@@ -80,8 +80,24 @@ def _configure_fetch(p: argparse.ArgumentParser) -> None:
 
 
 def _configure_bots(p: argparse.ArgumentParser) -> None:
-    p.add_argument("action", choices=("build", "fetch"), help="build from source, or download a release binary")
+    p.add_argument("action", choices=("build", "fetch"), help="build from source, or fetch a release client")
     p.add_argument("--module", help="bot module, a folder under bots/ (default: loadbot)")
+    p.add_argument("--python", help="Python interpreter or version for --module python (default: 3.12)")
+    p.add_argument(
+        "--find-links", action="append", default=[], metavar="PATH_OR_URL", help="Python wheel location; repeatable"
+    )
+    p.add_argument(
+        "--no-index", action="store_true", help="disable package-index lookups for Python development installs"
+    )
+    p.add_argument(
+        "--requirement",
+        dest="requirements",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="trusted Python dependency requirement file; repeatable",
+    )
     p.add_argument(
         "--target",
         dest="targets",

@@ -46,6 +46,10 @@ class BotParams:
     pkt_interval_s: float
     probe_bots: int
     decode_errors: str
+    implementation: str = "go"
+    transport: str = "raknet"
+    server_key_sha256: str = ""
+    server_key_source: str = "configured"
 
 
 @dataclass(frozen=True)

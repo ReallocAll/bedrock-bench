@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The load bot, seen from the harness: build or download it, find it, and run a fleet of bots.
 
-The bot is a Go program under ``bots/`` (see ``bots/README.md``). One process runs every bot of a run, writes JSON
-lines to stdout (``bedrock_bench/schemas/bot-event.schema.json``) and takes commands on stdin. :class:`BotFleet`
-starts it, stamps every event with the harness monotonic clock on receipt (``rx_ns``) and stops it cleanly: ``quit``
-on stdin first, so the bot can write its per-bot summaries, then an interrupt, then a kill.
+The bot is a Go or Python program under ``bots/`` (see ``bots/README.md``). One process runs every bot of a run,
+writes JSON lines to stdout (``bedrock_bench/schemas/bot-event.schema.json``) and takes commands on stdin.
+:class:`BotFleet` starts it and stamps every event with the harness monotonic clock on receipt (``rx_ns``).
+It stops it cleanly: ``quit`` on stdin first, so the bot can write its summaries, then an interrupt, then a kill.
 
 Rule R2 (one bot source, identical flags for every arm) is enforced by :func:`bot_args`: the arguments are derived
 from the workload alone, and only allowlisted compatibility flags may be added per adapter.
@@ -42,14 +42,15 @@ from bedrock_bench.workload import BotParams
 
 log = logging.getLogger(__name__)
 
-#: Bot modules, each a Go module under ``bots/``.
-MODULES = ("loadbot", "legacy1001")
+#: Go modules and the separately installed Python adapter under ``bots/``.
+MODULES = ("loadbot", "legacy1001", "python")
 
 #: Network protocol spoken by each module. Adapters declare ``protocol``; :func:`module_for_protocol` picks the bot.
-MODULE_PROTOCOLS = {"loadbot": 2193, "legacy1001": 1001}
+MODULE_PROTOCOLS = {"loadbot": 2193, "legacy1001": 1001, "python": 2193}
 
 #: Where release binaries are published: ``<base>/<tag>/<asset>`` plus ``<base>/<tag>/SHA256SUMS``.
 RELEASE_BASE_URL = "https://github.com/EndstoneMC/bedrock-bench/releases/download"
+PYTHON_RELEASE_BASE_URL = "https://github.com/ReallocAll/bedrock-bench/releases/download"
 ENV_RELEASE_TAG = "BBENCH_BOTS_TAG"
 ENV_RELEASE_URL = "BBENCH_BOTS_URL"
 
@@ -74,7 +75,7 @@ class BotError(RuntimeError):
 
 
 class ToolchainError(BotError):
-    """The Go toolchain needed to build the bot is missing or failed."""
+    """A toolchain needed to build or install the bot is missing or failed."""
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -128,6 +129,22 @@ def module_for_protocol(protocol: int) -> str:
     raise BotError(f"no bot speaks protocol {protocol}")
 
 
+def module_for_workload(protocol: int, params: BotParams, *, server: str | None = None) -> str:
+    """Select an implementation, rejecting transports unsupported by the server or protocol."""
+    if params.implementation not in ("go", "python") or params.transport not in ("raknet", "nethernet"):
+        raise BotError(f"unsupported bot implementation/transport: {params.implementation}/{params.transport}")
+    if params.transport == "nethernet":
+        if protocol != 2193:
+            raise BotError(f"NetherNet requires protocol 2193, got {protocol}")
+        if server is not None and server not in ("bds", "endstone"):
+            raise BotError(f"{server} has no supported NetherNet server configuration; select bds or endstone")
+    if params.implementation == "python":
+        if protocol != 2193 or params.transport != "nethernet":
+            raise BotError("the Python bot requires protocol 2193 and transport='nethernet'")
+        return "python"
+    return module_for_protocol(protocol)
+
+
 def _check_module(module: str) -> None:
     if module not in MODULES:
         raise ConfigError(f"unknown bot module {module!r}; expected one of {', '.join(MODULES)}")
@@ -139,15 +156,22 @@ def source_dir(module: str, root: Path | None = None) -> Path:
 
 
 def binary_path(module: str, target: Target | None = None, root: Path | None = None) -> Path:
-    """``bots/bin/<goos>-<goarch>/<module>[.exe]`` in the checkout."""
+    """The Go binary or managed Python interpreter in ``bots/bin/<goos>-<goarch>/``."""
     _check_module(module)
     target = target or Target.host()
+    if module == "python":
+        env = (root or project_root()) / "bots" / "bin" / target.slug / "python-env"
+        return env / "Scripts" / "python.exe" if target.goos == "windows" else env / "bin" / "python"
     return (root or project_root()) / "bots" / "bin" / target.slug / f"{module}{target.exe_suffix}"
 
 
 def asset_name(module: str, target: Target) -> str:
     """Release asset name, e.g. ``loadbot-linux-amd64`` or ``loadbot-windows-amd64.exe``."""
     _check_module(module)
+    if module == "python":
+        from bedrock_bench.python_bots import WHEEL_NAME
+
+        return WHEEL_NAME
     return f"{module}-{target.slug}{target.exe_suffix}"
 
 
@@ -177,7 +201,8 @@ class BotBinary:
     sha256: str
     target: Target
     info: Mapping[str, Any] = field(default_factory=dict)  # the -version JSON; empty for a cross-built binary
-    source: str = "build"  # build | release
+    source: str = "build"  # build | release | fetch | installed (Python identity changed since installation)
+    argv_prefix: tuple[str, ...] = ()
 
     @property
     def protocol(self) -> int:
@@ -185,11 +210,11 @@ class BotBinary:
 
     def command(self, args: Sequence[str]) -> list[str]:
         """The full command line for these bot arguments."""
-        return [str(self.path), *args]
+        return [*(self.argv_prefix or (str(self.path),)), *args]
 
     def provenance(self, args: Sequence[str]) -> dict[str, Any]:
-        """The ``bot`` block of run.json. The executable path is replaced by the module name."""
-        return {
+        """The ``bot`` block of run.json; Go keeps its historical module-name argv prefix."""
+        record = {
             "module": self.module,
             "protocol": self.protocol,
             "sha256": self.sha256,
@@ -200,22 +225,27 @@ class BotBinary:
             "patches": list(self.info.get("patches") or []),
             "argv": [self.module, *args],
         }
+        if self.module == "python":
+            record.update({"argv": self.command(args), "argv_prefix": list(self.argv_prefix), "build": dict(self.info)})
+        return record
 
 
-def version_info(path: Path, timeout_s: float = 30.0) -> dict[str, Any]:
+def version_info(path: Path | Sequence[str], timeout_s: float = 30.0) -> dict[str, Any]:
     """Run ``<bot> -version`` and return its JSON."""
+    prefix = [str(path)] if isinstance(path, Path) else list(path)
+    label = Path(prefix[0]).name
     try:
         proc = subprocess.run(
-            [str(path), "-version"], capture_output=True, timeout=timeout_s, check=True, stdin=subprocess.DEVNULL
+            [*prefix, "-version"], capture_output=True, timeout=timeout_s, check=True, stdin=subprocess.DEVNULL
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise BotError(f"{path.name} -version failed: {exc}") from exc
+        raise BotError(f"{label} -version failed: {exc}") from exc
     try:
         info = json.loads(proc.stdout)
     except ValueError as exc:
-        raise BotError(f"{path.name} -version printed no JSON: {proc.stdout[:200]!r}") from exc
+        raise BotError(f"{label} -version printed no JSON: {proc.stdout[:200]!r}") from exc
     if not isinstance(info, dict):
-        raise BotError(f"{path.name} -version printed {type(info).__name__}, not an object")
+        raise BotError(f"{label} -version printed {type(info).__name__}, not an object")
     return info
 
 
@@ -235,9 +265,13 @@ def locate(module: str, *, target: Target | None = None, root: Path | None = Non
     """The bot binary in ``bots/bin`` for this host (or ``target``), with its hash checked.
 
     The manifest written by :func:`build` or :func:`fetch` supplies the ``-version`` information when its hash still
-    matches the file; otherwise a host binary is asked directly.
+    matches the file and contains build information; otherwise a host binary is asked directly.
     """
     target = target or Target.host()
+    if module == "python":
+        from bedrock_bench.python_bots import locate_python
+
+        return locate_python(target=target, root=root or project_root())
     path = binary_path(module, target, root)
     if not path.is_file():
         raise BotError(f"{module} for {target} not found at {path}; run 'bbench bots build' or 'bbench bots fetch'")
@@ -251,7 +285,7 @@ def locate(module: str, *, target: Target | None = None, root: Path | None = Non
     if isinstance(manifest, dict) and manifest.get("sha256") == digest:
         info = dict(manifest.get("info") or {})
         source = str(manifest.get("source") or "build")
-    elif target == Target.host():
+    if not info and target == Target.host():
         info = version_info(path)
     if info and info.get("module") not in (None, module):
         raise BotError(f"{path} reports module {info.get('module')!r}, expected {module!r}")
@@ -307,6 +341,9 @@ def bot_args(
         "-probe-bots", str(params.probe_bots),
         "-decode-errors", params.decode_errors,
     ]  # fmt: skip
+    args.extend(["-transport", params.transport])
+    if params.implementation == "python" and params.server_key_sha256:
+        args.extend(["-server-key-sha256", params.server_key_sha256])
     return args + compat
 
 
@@ -365,11 +402,30 @@ def build(
     go: str | None = None,
     version: str | None = None,
     commit: str | None = None,
+    python: str | None = None,
+    find_links: Sequence[str] = (),
+    no_index: bool = False,
+    requirements: Sequence[Path] = (),
     run: Callable[..., Any] = subprocess.run,
 ) -> BotBinary:
     """Build a bot module into ``bots/bin/<target>/`` and record its hash and ``-version`` output."""
     root = root or project_root()
     target = target or Target.host()
+    if module == "python":
+        from bedrock_bench.python_bots import install_python
+
+        return install_python(
+            "build",
+            target=target,
+            root=root,
+            python=python,
+            find_links=find_links,
+            no_index=no_index,
+            requirements=requirements,
+            run=run,
+        )
+    if python or find_links or no_index or requirements:
+        raise ConfigError("Python install options require --module python")
     src = source_dir(module, root)
     if not (src / "go.mod").is_file():
         raise BotError(f"no Go module at {src}")
@@ -441,12 +497,36 @@ def fetch(
     tag: str | None = None,
     base_url: str | None = None,
     urlopen: Callable[..., Any] = urllib.request.urlopen,
+    python: str | None = None,
+    find_links: Sequence[str] = (),
+    no_index: bool = False,
+    requirements: Sequence[Path] = (),
+    run: Callable[..., Any] = subprocess.run,
 ) -> BotBinary:
-    """Download a release binary into ``bots/bin/<target>/`` after checking it against the release's SHA256SUMS."""
+    """Verify a release asset before replacing a Go binary or installing the Python wheel."""
     root = root or project_root()
     target = target or Target.host()
+    if module == "python":
+        from bedrock_bench.python_bots import _host_only, install_python
+
+        _host_only(target)
+        if find_links or no_index or requirements:
+            return install_python(
+                "fetch",
+                target=target,
+                root=root,
+                python=python,
+                find_links=find_links,
+                no_index=no_index,
+                requirements=requirements,
+                run=run,
+            )
+        root = root.resolve()
+    elif python or find_links or no_index or requirements:
+        raise ConfigError("Python install options require --module python")
     tag = tag or release_tag()
-    base = (base_url or os.environ.get(ENV_RELEASE_URL) or RELEASE_BASE_URL).rstrip("/")
+    default_base = PYTHON_RELEASE_BASE_URL if module == "python" else RELEASE_BASE_URL
+    base = (base_url or os.environ.get(ENV_RELEASE_URL) or default_base).rstrip("/")
     name = asset_name(module, target)
     sums_url = f"{base}/{tag}/SHA256SUMS"
     try:
@@ -457,9 +537,30 @@ def fetch(
     expected = sums.get(name)
     if expected is None:
         raise BotError(f"release {tag} has no {name}")
+    url = f"{base}/{tag}/{name}"
+    if module == "python":
+        local = root / ".local"
+        local.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="python-release-", dir=local) as directory:
+            wheel = Path(directory) / name
+            try:
+                with wheel.open("wb") as fh:
+                    got = _download(url, fh, urlopen)
+            except OSError as exc:
+                raise BotError(f"cannot download {url}: {exc}") from exc
+            if got != expected:
+                raise BotError(f"{name}: sha256 {got} does not match SHA256SUMS ({expected})")
+            return install_python(
+                "release",
+                target=target,
+                root=root,
+                python=python,
+                wheel=wheel,
+                provenance={"url": url, "tag": tag, "wheel_sha256": expected},
+                run=run,
+            )
     out = binary_path(module, target, root)
     out.parent.mkdir(parents=True, exist_ok=True)
-    url = f"{base}/{tag}/{name}"
     fd, tmp_name = tempfile.mkstemp(prefix=f".{out.name}.", dir=out.parent)
     tmp = Path(tmp_name)
     try:
@@ -489,18 +590,30 @@ def build_cli(args: argparse.Namespace) -> int:
     else:
         modules = ["loadbot"]
     try:
+        if "python" in modules and any(target != Target.host() for target in targets):
+            raise BotError("the Python bot is host-only; every --target must match this host")
         for module in modules:
             for target in targets:
                 if args.action == "build":
-                    binary = build(module, target, root=root)
+                    binary = build(module, target, root=root, **_python_cli_options(args))
                 else:
-                    binary = fetch(module, target, root=root)
+                    binary = fetch(module, target, root=root, **_python_cli_options(args))
                 rel = binary.path.relative_to(root).as_posix()
                 print(f"{module} {target} sha256={binary.sha256} {rel}")
     except BotError as exc:
         print(f"bbench bots {args.action}: {exc}", file=sys.stderr)
         return ExitCode.ENV_GATE
     return ExitCode.OK
+
+
+def _python_cli_options(args: argparse.Namespace) -> dict[str, Any]:
+    options = {
+        "python": getattr(args, "python", None),
+        "find_links": getattr(args, "find_links", []),
+        "no_index": getattr(args, "no_index", False),
+        "requirements": getattr(args, "requirements", []),
+    }
+    return options if any(options.values()) else {}
 
 
 # --------------------------------------------------------------------------------------------------------------------

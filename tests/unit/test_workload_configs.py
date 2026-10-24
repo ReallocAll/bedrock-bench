@@ -40,7 +40,8 @@ def full_config() -> str:
 @pytest.mark.parametrize("name", RUNNABLE)
 def test_every_config_loads(name: str) -> None:
     w = config.load_workload(CONFIGS / f"{name}.toml")
-    assert w.name == name and w.base == ("spread",)
+    bases = {"smoke-python": ("smoke", "spread"), "spread-100-python": ("spread-100", "spread")}
+    assert w.name == name and w.base == bases.get(name, ("spread",))
     assert tuple(p.name for p in w.phases) == PHASES
     assert w.grid.spacing > 2 * 16 * w.server.view_distance, "neighbouring bots would share chunks"
     assert w.phase("settle")["min_s"] <= w.phase("settle").cap_s
@@ -61,6 +62,13 @@ def test_smoke_is_short() -> None:
     assert (smoke.bots.n, smoke.run.repeats) == (4, 1)
     assert smoke.phase("steady").duration_s < reference.phase("steady").duration_s
     assert smoke.server.csg is reference.server.csg is False
+
+
+@pytest.mark.parametrize("base", ["smoke", "spread-100"])
+def test_python_presets_change_only_client_selection_and_identity(base: str) -> None:
+    expected = config.load_workload(base).params
+    expected["bots"].update(implementation="python", transport="nethernet", server_key_source="managed-local")
+    assert config.load_workload(f"{base}-python").params == expected
 
 
 def test_the_base_does_not_run_on_its_own() -> None:
@@ -141,6 +149,29 @@ def test_record_round_trip() -> None:
     assert record["params"]["bots"]["n"] == 100 and "base" not in record["params"]
     rebuilt = workload.from_record({"workload": record})
     assert rebuilt == w and rebuilt.sha256 == w.sha256
+
+
+def test_old_configs_default_to_go_raknet(configs: Callable[[str, str], Path]) -> None:
+    w = config.load_workload(configs("old", full_config()))
+    assert (w.bots.implementation, w.bots.transport, w.bots.server_key_sha256) == ("go", "raknet", "")
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ('implementation = "ruby"', "implementation: must be one of"),
+        ('transport = "tcp"', "transport: must be one of"),
+        ('implementation = "python"', "requires transport='nethernet'"),
+        ('implementation = "python"\ntransport = "nethernet"', "requires a verified server_key_sha256"),
+        ('server_key_sha256 = "' + "a" * 64 + '"', "requires implementation='python'"),
+        ('implementation = "python"\ntransport = "nethernet"\nserver_key_sha256 = "wrong"', "server_key_sha256"),
+    ],
+)
+def test_invalid_bot_selection(configs: Callable[[str, str], Path], settings: str, message: str) -> None:
+    configs("full", full_config())
+    path = configs("invalid", f'base = "full"\n[bots]\n{settings}\n')
+    with pytest.raises(ConfigError, match=message):
+        config.load_workload(path)
 
 
 def test_a_record_without_a_workload_is_an_error() -> None:
