@@ -259,6 +259,32 @@ def go_command(monkeypatch, *, transport="nethernet", server="bds"):
     return phases.bot_command(adapter, workload, machine)
 
 
+@pytest.mark.parametrize("implementation,transport", [("go", "raknet"), ("go", "nethernet"), ("python", "nethernet")])
+def test_transport_selection_uses_adapter_capability_not_name(monkeypatch, implementation, transport):
+    monkeypatch.delenv(phases.ENV_BOT_CMD, raising=False)
+    monkeypatch.setattr(bots, "locate", lambda module: binary() if module == "python" else go_binary())
+    machine = config.default_machine()
+    adapter = SimpleNamespace(name="fixture", protocol=2193, supports_nethernet=True, bot_compat_flags=())
+    workload = with_overrides(
+        WORKLOAD,
+        {
+            "bots": {
+                "implementation": implementation,
+                "transport": transport,
+                "server_key_sha256": "a" * 64 if implementation == "python" else "",
+            }
+        },
+    )
+    command = phases.bot_command(adapter, workload, machine)
+    assert bool(command.pending_args) == (implementation == "go" and transport == "nethernet")
+    adapter.supports_nethernet = False
+    if transport == "nethernet":
+        with pytest.raises(bots.BotError, match="no supported NetherNet"):
+            phases.bot_command(adapter, workload, machine)
+    else:
+        assert phases.bot_command(adapter, workload, machine) == command
+
+
 def listener(address, *, pid=123, fd=7):
     return SimpleNamespace(
         family=socket.AF_INET6 if ":" in address else socket.AF_INET,

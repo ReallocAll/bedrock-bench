@@ -66,6 +66,7 @@ ENDSTONE_DIALECT = bds_dialect(
 
 class EndstoneAdapter(BdsFamily):
     name: ClassVar[str] = "endstone"
+    supports_nethernet: ClassVar[bool] = True
     platforms: ClassVar[frozenset[str]] = frozenset({"windows", "linux"})
     dialect: ClassVar[Dialect] = ENDSTONE_DIALECT
     crash_paths: ClassVar[tuple[str, ...]] = ("crash_reports", ".sentry-native", "%LOCALAPPDATA%/CrashDumps")

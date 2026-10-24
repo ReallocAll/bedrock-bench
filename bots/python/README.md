@@ -109,7 +109,7 @@ reconnected automatically. `-join-retries` applies only to failed first joins.
 The adapter owns benchmark policy; general connection and gameplay behavior
 belongs in the SDK. Preserve the shared event schema, accounting windows and
 workload when changing either implementation. See the
-[SDK API guide](https://github.com/ReallocAll/bedrock-bot/blob/main/docs/business-api.md)
+[SDK API guide](https://github.com/ReallocAll/bedrock-bot/blob/main/docs/api.md)
 for SDK lifetime and error contracts.
 
 In an isolated environment with compatible SDK/protocol wheels available, install

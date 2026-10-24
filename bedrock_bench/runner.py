@@ -330,7 +330,7 @@ def bot_missing(adapter: ServerAdapter, workload: Workload | None = None) -> str
     """Why the bot for the adapter's protocol is not available on this machine, or None."""
     try:
         module = (
-            bots.module_for_workload(adapter.protocol, workload.bots, server=adapter.name)
+            bots.module_for_workload(adapter.protocol, workload.bots, supports_nethernet=adapter.supports_nethernet)
             if workload is not None
             else bots.module_for_protocol(adapter.protocol)
         )
@@ -364,7 +364,7 @@ def session_arms(
         if workload is not None:
             for arm in arms:
                 adapter = adapters.create(arm, machine)
-                bots.module_for_workload(adapter.protocol, workload.bots, server=adapter.name)
+                bots.module_for_workload(adapter.protocol, workload.bots, supports_nethernet=adapter.supports_nethernet)
         return arms, []
     arms, skipped = [], []
     here = host_os()

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 class BdsAdapter(BdsFamily):
     name: ClassVar[str] = "bds"
+    supports_nethernet: ClassVar[bool] = True
     platforms: ClassVar[frozenset[str]] = frozenset({"windows", "linux"})
     dialect: ClassVar[Dialect] = BDS_DIALECT
 

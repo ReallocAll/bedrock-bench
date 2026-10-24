@@ -216,6 +216,7 @@ class ServerAdapter(abc.ABC):
     platforms: ClassVar[frozenset[str]]  # subset of {"windows", "linux"}
     bot_compat_flags: ClassVar[tuple[str, ...]] = ()  # subset of ALLOWED_COMPAT
     supports_csg: ClassVar[bool] = False
+    supports_nethernet: ClassVar[bool] = False
     dialect: ClassVar[Dialect]
     tick_thread_rule: ClassVar[str] = "none"
     crash_paths: ClassVar[tuple[str, ...]] = ()  # files or folders (relative to the server dir, env vars expanded)

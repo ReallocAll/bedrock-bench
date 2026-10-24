@@ -129,7 +129,7 @@ def bot_command(adapter: ServerAdapter, workload: Workload, machine: Machine) ->
 
     Raises :class:`bedrock_bench.bots.BotError` when the bot has not been built or fetched.
     """
-    module = bots.module_for_workload(adapter.protocol, workload.bots, server=adapter.name)
+    module = bots.module_for_workload(adapter.protocol, workload.bots, supports_nethernet=adapter.supports_nethernet)
     args = bots.bot_args(
         workload.bots,
         addr=f"127.0.0.1:{machine.port}",
@@ -163,9 +163,7 @@ def bot_command(adapter: ServerAdapter, workload: Workload, machine: Machine) ->
         return BotCommand((*prefix, *args), provenance, override=True)
     binary = bots.locate(module)
     local_go = (
-        workload.bots.implementation == "go"
-        and workload.bots.transport == "nethernet"
-        and adapter.name in ("bds", "endstone")
+        workload.bots.implementation == "go" and workload.bots.transport == "nethernet" and adapter.supports_nethernet
     )
     if managed or local_go:
         provenance = binary.provenance([])

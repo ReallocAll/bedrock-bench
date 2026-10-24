@@ -34,16 +34,18 @@ def python_workload() -> Any:
 
 def test_selection_keeps_both_go_modules_and_rejects_unsupported_transports() -> None:
     params = WORKLOAD.bots
-    assert bots.module_for_workload(2193, params, server="bds") == "loadbot"
-    assert bots.module_for_workload(1001, params, server="pocketmine") == "legacy1001"
+    assert bots.module_for_workload(2193, params, supports_nethernet=True) == "loadbot"
+    assert bots.module_for_workload(1001, params, supports_nethernet=False) == "legacy1001"
     python = python_workload().bots
-    assert bots.module_for_workload(2193, python, server="endstone") == "python"
+    assert bots.module_for_workload(2193, python, supports_nethernet=True) == "python"
     with pytest.raises(bots.BotError, match="protocol 2193"):
-        bots.module_for_workload(1001, python, server="pocketmine")
+        bots.module_for_workload(1001, python, supports_nethernet=False)
     with pytest.raises(bots.BotError, match="no supported NetherNet"):
-        bots.module_for_workload(2193, python, server="dragonfly")
+        bots.module_for_workload(2193, python, supports_nethernet=False)
     with pytest.raises(bots.BotError, match="protocol 2193"):
-        bots.module_for_workload(1001, with_overrides(WORKLOAD, {"bots": {"transport": "nethernet"}}).bots)
+        bots.module_for_workload(
+            1001, with_overrides(WORKLOAD, {"bots": {"transport": "nethernet"}}).bots, supports_nethernet=True
+        )
 
 
 def test_python_flags_include_transport_and_optional_pin() -> None:

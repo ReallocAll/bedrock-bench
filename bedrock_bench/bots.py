@@ -129,15 +129,15 @@ def module_for_protocol(protocol: int) -> str:
     raise BotError(f"no bot speaks protocol {protocol}")
 
 
-def module_for_workload(protocol: int, params: BotParams, *, server: str | None = None) -> str:
+def module_for_workload(protocol: int, params: BotParams, *, supports_nethernet: bool) -> str:
     """Select an implementation, rejecting transports unsupported by the server or protocol."""
     if params.implementation not in ("go", "python") or params.transport not in ("raknet", "nethernet"):
         raise BotError(f"unsupported bot implementation/transport: {params.implementation}/{params.transport}")
     if params.transport == "nethernet":
         if protocol != 2193:
             raise BotError(f"NetherNet requires protocol 2193, got {protocol}")
-        if server is not None and server not in ("bds", "endstone"):
-            raise BotError(f"{server} has no supported NetherNet server configuration; select bds or endstone")
+        if not supports_nethernet:
+            raise BotError("adapter has no supported NetherNet server configuration")
     if params.implementation == "python":
         if protocol != 2193 or params.transport != "nethernet":
             raise BotError("the Python bot requires protocol 2193 and transport='nethernet'")
