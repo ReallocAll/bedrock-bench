@@ -459,7 +459,13 @@ def test_bots_against_the_fake_server(tmp_path: Path, schema_validator: Callable
     for event in events:
         validator.validate(event)
     assert events[0]["ev"] == "hello" and events[-1]["ev"] == "done"
-    assert [e["bot"] for e in events if e["ev"] == "tp"] == ["a00", "a01", "a02"]
+    # Each connection has its own reader; arrivals across bots have no fixed order.
+    teleports = [e for e in events if e["ev"] == "tp"]
+    assert sorted((e["bot"], e["pos"], e["dim"], e["n"]) for e in teleports) == [
+        ("a00", [1280.0, 300.0, 1280.0], 0, 1),
+        ("a01", [1920.0, 300.0, 1280.0], 0, 1),
+        ("a02", [2560.0, 300.0, 1280.0], 0, 1),
+    ]
     assert sorted(e["bot"] for e in events if e["ev"] == "bot_summary") == ["a00", "a01", "a02"]
     final = [e for e in events if e["ev"] == "stat"][-1]
     assert (final["joined"], final["failed"], final["deaths"], final["decode_errors"]) == (3, 0, 1, 0)
