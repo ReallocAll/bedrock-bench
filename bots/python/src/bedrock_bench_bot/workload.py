@@ -69,9 +69,6 @@ class ChunkTracker:
         self.seen[key] = max(0, now_ms - self.origin)
         return True
 
-    def view(self, dimension: int, x: float, z: float, radius: int) -> list[float]:
-        return list(self._view_times(dimension, x, z, radius))
-
     def view_count(self, dimension: int, x: float, z: float, radius: int) -> int:
         return sum(1 for _ in self._view_times(dimension, x, z, radius))
 

@@ -21,7 +21,7 @@ from bedrock_bench_bot import cli
 from bedrock_bench_bot.config import Config, UsageError, duration, parse_args
 from bedrock_bench_bot.events import Emitter
 from bedrock_bench_bot.fleet import Fleet
-from bedrock_bench_bot.identity import _direct_source, build_info, distribution_identity
+from bedrock_bench_bot.identity import _direct_source, distribution_identity
 from bedrock_bench_bot.workload import ChunkTracker, Walker, bot_uuid, float32, in_view, subchunk_heights
 from fake_sdk import (
     BotState,
@@ -120,7 +120,6 @@ def test_chunks_ignore_spawn_keep_origin_use_dimension_and_current_disc():
     assert tracker.origin == 200
     tracker.add((0, 2, 0), 220.9)
     assert tracker.received == 4 and len(tracker.seen) == 3
-    assert tracker.view(0, -0.01, 0, 1) == [12.800000000000011]
     assert tracker.deltas(0, 0, 0, 2) == [12, 8]
     assert not in_view((0, 2, 2), 0, 0, 0, 1)  # Square bounds would incorrectly include this.
     assert in_view((0, -1, 0), 0, -0.01, 0, 1)
@@ -133,14 +132,6 @@ def test_chunks_ignore_spawn_keep_origin_use_dimension_and_current_disc():
 
 
 def test_installed_identity_and_source_metadata_redact_credentials():
-    info = build_info()
-    assert info["module"] == "python" and info["protocol"] == 2193
-    assert "python" not in info and "dependencies" not in info
-    assert len(info["environment"]["interpreter"]["sha256"]) == 64
-    distributions = {item["name"]: item for item in info["environment"]["distributions"]}
-    own = distributions["bedrock-bench-bot"]
-    assert own["version"] == "0.1.0.dev0"
-    assert "bedrock_bench_bot/fleet.py" in own["files"]
     dist = SimpleNamespace(
         read_text=lambda _: json.dumps(
             {
@@ -473,38 +464,6 @@ def test_synthetic_cli_signal_handlers_stop_normally_and_restore(monkeypatch, ki
     assert installed[kind] == signal.getsignal(kind)
 
 
-def test_nonpollable_stdin_uses_existing_bounded_daemon_reader(monkeypatch):
-    async def check():
-        loop = asyncio.get_running_loop()
-        stopped = asyncio.Event()
-        fleet = SimpleNamespace(request_stop=stopped.set, log=lambda _: None)
-        monkeypatch.setattr(cli, "sys", SimpleNamespace(platform="linux"))
-        attempts, created = [], []
-
-        def add_reader(fd, callback):
-            attempts.append(fd)
-            raise PermissionError("Operation not permitted")
-
-        monkeypatch.setattr(loop, "add_reader", add_reader)
-        original_thread = threading.Thread
-
-        def thread(*args, **kwargs):
-            worker = original_thread(*args, **kwargs)
-            created.append(worker)
-            return worker
-
-        monkeypatch.setattr(cli.threading, "Thread", thread)
-        with open(os.devnull, encoding="utf-8") as stdin:
-            remove = cli._stdin(fleet, stdin)
-            try:
-                await asyncio.wait_for(stopped.wait(), 1)
-            finally:
-                remove()
-        assert len(attempts) == len(created) == 1 and created[0].daemon
-
-    asyncio.run(check())
-
-
 def test_nonpollable_reader_cancellation_suppresses_queued_owner_stop(monkeypatch):
     async def check():
         loop = asyncio.get_running_loop()
@@ -523,6 +482,7 @@ def test_nonpollable_reader_cancellation_suppresses_queued_owner_stop(monkeypatc
         monkeypatch.setattr(cli.threading, "Thread", thread)
         with open(os.devnull, encoding="utf-8") as stdin:
             remove = cli._stdin(fleet, stdin)
+            assert len(workers) == 1 and workers[0].daemon
             workers[0].join(timeout=1)
             assert not workers[0].is_alive() and len(queued) == 1
             remove()

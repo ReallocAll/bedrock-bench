@@ -50,9 +50,6 @@ class Attempt:
         x, _, z = self.position
         return self.dimension, x, z, self.radius
 
-    def view(self):
-        return self.tracker.view(*self._view_geometry())
-
     def view_count(self):
         return self.tracker.view_count(*self._view_geometry())
 
@@ -86,7 +83,6 @@ class Fleet:
         self.resolved = 0
         self.attempts: list[Attempt] = []
         self.by_bot = {}
-        self.latest: dict[int, Attempt] = {}
         self.last_spawned: dict[int, Attempt] = {}
         self.started_indices: list[int] = []
         self.tasks = []
@@ -168,7 +164,6 @@ class Fleet:
             if self.stop.is_set():
                 return
             attempt = Attempt(index, config.name(index), Walker(config.walk, index), self.emitter.now_ms())
-            self.latest[index] = attempt
             self.attempts.append(attempt)
             self.emitter.emit("dial", bot=attempt.name, i=index)
             bot = self.runtime.add_bot(self._options(index))
@@ -471,10 +466,6 @@ class Fleet:
             )
         if self.config.decode_errors == "fail":
             self.request_stop(3)
-
-    def counts(self):
-        rx, tx, lost, _ = self._report_counts()
-        return rx, tx, lost
 
     def _report_counts(self):
         rx, tx, lost = Counter(), Counter(), 0
