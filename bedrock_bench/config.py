@@ -646,15 +646,17 @@ def parse_workload(
         raise top.error("server", "max_players must be at least bots.n")
     if workload.bots.probe_bots > workload.bots.n:
         raise top.error("bots", "probe_bots must not exceed n")
-    if workload.bots.implementation == "python" and workload.bots.transport != "nethernet":
-        raise top.error("bots", "implementation='python' requires transport='nethernet'")
     if workload.bots.server_key_source == "managed-local":
         if workload.bots.implementation != "python" or workload.bots.transport != "nethernet":
             raise top.error("bots", "server_key_source='managed-local' requires Python and NetherNet")
         if workload.bots.server_key_sha256:
             raise top.error("bots", "managed-local and server_key_sha256 are mutually exclusive")
-    elif workload.bots.implementation == "python" and not workload.bots.server_key_sha256:
-        raise top.error("bots", "implementation='python' requires a verified server_key_sha256")
+    elif (
+        workload.bots.implementation == "python"
+        and workload.bots.transport == "nethernet"
+        and not workload.bots.server_key_sha256
+    ):
+        raise top.error("bots", "Python NetherNet requires a verified server_key_sha256")
     if workload.bots.server_key_sha256 and workload.bots.implementation != "python":
         raise top.error("bots", "server_key_sha256 requires implementation='python'")
     return workload

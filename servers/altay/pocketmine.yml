@@ -5,8 +5,8 @@ memory:
   # Altay ships PocketMine-MP's 1024 MB limit, which stops the server about 23 s into the 100-bot join.
   main-hard-limit: 0
 network:
-  # The bots connect over RakNet, which Altay logs as deprecated, so the transport is pinned.
-  transport: raknet
+  # Match the transport selected by the workload.
+  transport: {{ workload.bots.transport }}
 chunk-ticking:
   # Same simulation distance on every server.
   tick-radius: {{ workload.server.tick_distance }}

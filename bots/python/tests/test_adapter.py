@@ -64,16 +64,18 @@ def test_config_go_spellings_and_rejections():
     assert parsed.stagger == 62.5 and parsed.spawn_timeout == 3723
     assert parsed.csg and not parsed.loadscreen
     assert parsed.flags()["spawn-timeout"] == "1h2m3s"
+    replace(CONFIG, transport="raknet", server_key_sha256="").validate()
+    replace(CONFIG, transport="raknet", server_key_sha256="ab" * 32).validate()
     for value, expected in (("300ms", 0.3), ("1.5h2m", 5520), ("+.5s", 0.5), ("-2µs", -0.000002), ("0", 0)):
         assert duration(value) == expected
     for value in ("", "1", "1d", "1sX", "--1s", "+-1s", "-+1s", "1.2.3s"):
         with pytest.raises(argparse.ArgumentTypeError):
             duration(value)
     for config in (
-        replace(CONFIG, transport="raknet"),
         replace(CONFIG, control=True),
         replace(CONFIG, n=0),
         replace(CONFIG, server_key_sha256=""),
+        replace(CONFIG, transport="raknet", server_key_sha256="bad"),
         replace(CONFIG, radius=97),
         replace(CONFIG, addr="http://localhost:19132"),
         replace(CONFIG, addr="user:pw@host:42"),
@@ -89,6 +91,24 @@ def test_identity_go_vectors():
     assert bot_uuid("bedrock-bench", "a07") == "f772d804-dfc0-5864-aca1-62c2503e67b5"
     assert bot_uuid("bedrock-bench", "b00") == "cfa2ea17-c22d-59c6-8d04-476ee9e828bd"
     assert bot_uuid("a63ab145-9c09-5f88-b7a5-cbc4f1aa9bb9", "b00") == bot_uuid("bedrock-bench", "b00")
+
+
+@pytest.mark.parametrize(
+    ("transport", "pin", "url"),
+    [
+        ("nethernet", "ab" * 32, "http://localhost:19132"),
+        ("raknet", "", "raknet://localhost:19132"),
+    ],
+)
+def test_fleet_options_map_sdk_transport(transport, pin, url):
+    config = replace(CONFIG, transport=transport, server_key_sha256=pin)
+    config.validate()
+    fleet = Fleet(config, make_sdk(), Emitter(io.StringIO()), BUILD, io.StringIO())
+    options = fleet._options(7)
+    assert options.server_url == url
+    assert options.transport == transport
+    assert options.protocol == 2193
+    assert options.server_key_sha256 == pin
 
 
 def test_circle_advances_yaw_before_moving_and_preserves_none_yaw():
@@ -175,7 +195,7 @@ def test_inventory_hashes_actual_resources_and_fails_on_missing_file_or_inventor
 
 
 def test_cli_flags_errors_exit_one_and_do_not_pollute_stdout():
-    for args in (["-transport", "raknet"], ["-control"], ["-bogus"], ["positional"]):
+    for args in (["-control"], ["-bogus"], ["positional"]):
         stdout, stderr = io.StringIO(), io.StringIO()
         assert cli.run(args, stdout=stdout, stderr=stderr) == 1
         assert not stdout.getvalue() and stderr.getvalue()

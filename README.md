@@ -53,17 +53,20 @@ the client machine cannot sustain 100 bots. Compare results only within the same
 workload, machine and placement settings.
 
 The default client is Go over RakNet. Go also supports NetherNet; the optional
-[Python client](bots/python/README.md) uses NetherNet and the installed
-`bedrock-bot` SDK. [Load bot documentation](bots/README.md) describes flags,
+[Python client](bots/python/README.md) uses the installed `bedrock-bot` SDK over
+NetherNet or RakNet. [Load bot documentation](bots/README.md) describes flags,
 accounting and implementation differences.
 
 The inherited `configs/smoke-python.toml` and `configs/spread-100-python.toml`
 presets select Python over NetherNet with managed local server identity; all
-other workload settings remain inherited. Default `bbench bots fetch --module
-python` will verify the adapter wheel from this fork's release before installation.
-It is **not yet usable**: a matching bot release and compatible SDK/native wheels
-are not currently published. Use the explicit local-wheel development path in the
-[bot guide](bots/README.md#python-installation) until those artifacts are available.
+other workload settings remain inherited. The
+`configs/smoke-python-raknet.toml` and `configs/spread-100-python-raknet.toml`
+presets select Python over RakNet with configured server identity and no digest
+pin. The SDK's optional `raknet` extra and compatible native wheels are required.
+Default `bbench bots fetch --module python` verifies the adapter wheel from this
+fork's release before installation; a matching adapter release and SDK/native
+wheels must be available. Use the explicit local-wheel development path in the
+[bot guide](bots/README.md#python-installation) until then.
 
 ## Read the results
 
@@ -77,7 +80,8 @@ uv run bbench report runs/<session-id>
 Each run records configuration, server and client identities, machine information,
 phase boundaries and health. Invalid runs and crashes remain visible. Client
 presence alone does not establish sustained input or completed chunk loading.
-NetherNet transport-byte counters are unavailable; see the bot accounting rules.
+Python SDK transport-byte counters are unavailable for both transports; see the
+bot accounting rules.
 
 [Methodology](docs/methodology.md) defines workload and validity rules, including
 our [conflict of interest](docs/methodology.md#conflict-of-interest): EndstoneMC

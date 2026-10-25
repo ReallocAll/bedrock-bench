@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+base = "spread-100"
+
+[bots]
+implementation = "python"
+transport = "raknet"
+server_key_source = "configured"
+server_key_sha256 = ""

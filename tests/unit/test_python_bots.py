@@ -32,12 +32,30 @@ def python_workload() -> Any:
     )
 
 
+def python_raknet_workload(server_key_sha256: str = "") -> Any:
+    return with_overrides(
+        WORKLOAD,
+        {
+            "bots": {
+                "implementation": "python",
+                "transport": "raknet",
+                "server_key_source": "configured",
+                "server_key_sha256": server_key_sha256,
+            },
+        },
+    )
+
+
 def test_selection_keeps_both_go_modules_and_rejects_unsupported_transports() -> None:
     params = WORKLOAD.bots
     assert bots.module_for_workload(2193, params, supports_nethernet=True) == "loadbot"
     assert bots.module_for_workload(1001, params, supports_nethernet=False) == "legacy1001"
     python = python_workload().bots
     assert bots.module_for_workload(2193, python, supports_nethernet=True) == "python"
+    python_raknet = python_raknet_workload().bots
+    assert bots.module_for_workload(2193, python_raknet, supports_nethernet=False) == "python"
+    with pytest.raises(bots.BotError, match="protocol 2193"):
+        bots.module_for_workload(1001, python_raknet, supports_nethernet=False)
     with pytest.raises(bots.BotError, match="protocol 2193"):
         bots.module_for_workload(1001, python, supports_nethernet=False)
     with pytest.raises(bots.BotError, match="no supported NetherNet"):
@@ -58,19 +76,28 @@ def test_python_flags_include_transport_and_optional_pin() -> None:
     assert "-server-key-sha256" not in go
 
 
-@pytest.mark.parametrize("server", ["bds", "endstone"])
+def test_python_raknet_allows_an_optional_server_key_pin() -> None:
+    workload = python_raknet_workload("A" * 64)
+    args = bots.bot_args(workload.bots, addr="localhost:1", csg=False)
+    assert args[args.index("-transport") + 1] == "raknet"
+    assert args[args.index("-server-key-sha256") + 1] == "A" * 64
+
+
+@pytest.mark.parametrize("server", ["bds", "endstone", "altay"])
 @pytest.mark.parametrize("transport", ["raknet", "nethernet"])
-def test_server_transport_matches_workload(server: str, transport: str) -> None:
+def test_server_transport_matches_workload(server: str, transport: str, tmp_path: Path) -> None:
     workload = with_overrides(WORKLOAD, {"bots": {"transport": transport}})
-    text = templates.render(
-        config.server_dir(server),
-        "server.properties",
-        {
-            "workload": workload,
-            "run": {"port": 19672, "port_v6": 19673, "server_cpu_count": 4},
-        },
-    )
-    assert templates.values("properties", text)["transport"] == transport
+    name = "pocketmine.yml" if server == "altay" else "server.properties"
+    fmt = templates.file_format(name)
+    key = "network.transport" if server == "altay" else "transport"
+    variables = {
+        "workload": workload,
+        "run": {"port": 19672, "port_v6": 19673, "server_cpu_count": 4},
+    }
+    written = templates.apply(config.server_dir(server), name, tmp_path, variables)
+    text = (tmp_path / name).read_text(encoding="utf-8")
+    assert templates.values(fmt, text)[key] == transport
+    assert templates.readback(tmp_path, [written]) == []
 
 
 def test_override_keeps_full_prefix_and_hashes_its_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -103,10 +130,12 @@ def test_session_selection_checks_workload_even_with_override(monkeypatch: pytes
     arms, _ = runner.session_arms(["bds@1.26.52.3", "endstone@0.11.14"], machine, workload)
     assert [arm.server for arm in arms] == ["bds", "endstone"]
     with pytest.raises(bots.BotError, match="no supported NetherNet"):
-        runner.session_arms(["dragonfly@1793369"], machine, workload)
+        runner.session_arms(["nukkit@b3caad6"], machine, workload)
     arms, skipped = runner.session_arms([], machine, workload)
-    assert {arm.server for arm in arms} == {"bds", "endstone"}
-    assert any("no supported NetherNet" in reason for reason in skipped)
+    selected = {arm.server for arm in arms}
+    assert {"bds", "endstone"}.issubset(selected)
+    assert "nukkit" not in selected
+    assert any("nukkit" in reason and "no supported NetherNet" in reason for reason in skipped)
 
 
 def test_unsupported_session_selection_returns_an_environment_error(
@@ -114,7 +143,7 @@ def test_unsupported_session_selection_returns_an_environment_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(runner.config, "load_workload", lambda path: python_workload())
-    args = SimpleNamespace(config="smoke", machine=None, tags=["dragonfly@1793369"])
+    args = SimpleNamespace(config="smoke", machine=None, tags=["nukkit@b3caad6"])
     assert runner.run_session(args) == ExitCode.ENV_GATE
     assert "no supported NetherNet" in capsys.readouterr().err
 

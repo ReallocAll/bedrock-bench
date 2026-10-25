@@ -1,20 +1,20 @@
 # Python load client
 
-`bedrock-bench-bot` runs protocol 2193 benchmark players over NetherNet using the
-`bedrock-bot` SDK. It follows the shared [load bot workload](../README.md),
+`bedrock-bench-bot` runs protocol 2193 benchmark players over NetherNet or RakNet
+using the `bedrock-bot` SDK. It follows the shared [load bot workload](../README.md),
 including movement, chunk requests, startup accounting and JSON events.
 
 It supports Python 3.12+ on Windows and Linux with compatible native protocol
-wheels. RakNet, protocol 1001 and Go's `-control` commands are not supported.
+wheels. Protocol 1001 and Go's `-control` commands are not supported.
 
 ## Install
 
 The harness installs this package and its SDK dependencies into
 `bots/bin/<os>-<arch>/python-env`. Supply the required wheels through the configured
 package index or a local wheel directory. A native wheel's Python tag and platform
-must match the selected interpreter. The SDK's dependency metadata specifies the
-NetherNet implementation; the unrelated registry package with the same name is
-not a substitute.
+must match the selected interpreter. The SDK's base dependency includes NetherNet;
+RakNet's implementation is selected by the optional `raknet` extra. The unrelated
+registry package with the same name is not a substitute.
 
 The installer uses uv and passes supplied requirements files through unchanged.
 `--no-index` disables package-index lookups; it does not disable Git downloads or
@@ -41,8 +41,8 @@ connecting to a server.
 
 ## Select a workload
 
-For a local BDS or Endstone smoke run, save `python-smoke.toml` at the repository
-root:
+For a local BDS or Endstone NetherNet smoke run, save `python-smoke.toml` at the
+repository root:
 
 ```toml
 base = "smoke"
@@ -66,13 +66,22 @@ overrides through `BBENCH_BOT_CMD` are not supported in this mode.
 
 To use a digest obtained through a trusted channel, set
 `server_key_source = "configured"` (the default) and supply
-`server_key_sha256` as 64 hexadecimal characters. Every SDK connection verifies
-that digest. A mismatched configured key never falls back to managed identity.
-The SDK can connect to remote signaling endpoints; managed local discovery is a
-benchmark-specific convenience, not an SDK address restriction.
+`server_key_sha256` as 64 hexadecimal characters. Configured NetherNet workloads
+require that pin. RakNet accepts an empty pin or a 64-character digest. Every SDK
+connection verifies a supplied digest. A mismatched configured key never falls
+back to managed identity. Managed local identity remains limited to local BDS and
+Endstone NetherNet. The SDK can connect to remote endpoints; managed local
+discovery is a benchmark-specific convenience, not an SDK address restriction.
 
 The harness configures the server and client for the same transport. Python
-NetherNet workloads require protocol 2193 and a supported BDS or Endstone adapter.
+workloads require protocol 2193; NetherNet additionally requires a supported BDS
+or Endstone adapter.
+
+The inherited `configs/smoke-python-raknet.toml` and
+`configs/spread-100-python-raknet.toml` presets select RakNet and configured
+identity with an empty digest. Install `bedrock-bot[raknet]==0.1.0` alongside the
+adapter when using them. The existing Python presets continue to use NetherNet
+and managed local identity.
 
 ## Measurements
 
@@ -87,10 +96,11 @@ additional Python measurements:
   previous stat report, then resets. It measures ticks that actually ran; it is
   neither a percentile nor a count of every missed 50 ms period.
 
-NetherNet transport bytes are unknown and emitted as `null`. Use application
-packet counts to assess input traffic; online player count alone does not prove
-sustained input. The build metadata records the actual running loop and uvloop
-version where used. Linux uses uvloop; Windows uses a Selector event loop.
+Transport bytes are unavailable from the Python SDK for both transports and are
+emitted as `null`. Use application packet counts to assess input traffic; online
+player count alone does not prove sustained input. The build metadata records the
+actual running loop and uvloop version where used. Linux uses uvloop; Windows uses
+a Selector event loop.
 
 ## Startup and shutdown
 

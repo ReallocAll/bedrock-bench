@@ -9,11 +9,11 @@ The harness starts the client, stores its events in `bots.jsonl.gz` and stops it
 | `core/` | Shared Go flags, events, movement, chunk accounting and fleet behavior. |
 | `loadbot/` | Current protocol 2193 Go frontend, using gophertunnel. Supports RakNet and NetherNet. |
 | `legacy1001/` | Protocol 1001 Go frontend for PocketMine-MP and Allay. |
-| [python/](python/README.md) | Protocol 2193 NetherNet frontend using the installed Python SDK. |
+| [python/](python/README.md) | Protocol 2193 RakNet and NetherNet frontend using the installed Python SDK. |
 
 A session uses one implementation and the same workload flags for every server.
-Only `-fake-xuid` may be added by a server adapter. Python does not support RakNet,
-protocol 1001 or Go's manual JSON control commands.
+Only `-fake-xuid` may be added by a server adapter. Python supports protocol 2193
+only and does not support Go's manual JSON control commands.
 
 ## Build or fetch Go clients
 
@@ -67,9 +67,15 @@ lookups, not explicitly requested Git/network sources. Build uses the same
 installer, dependency checks and installed-file identity capture. Direct adapter
 dependencies are pinned in its metadata; this is not a full transitive lock.
 
-Use `configs/smoke-python.toml` or `configs/spread-100-python.toml` for the existing
-workload with Python/NetherNet and managed local identity. See the
-[Python guide](python/README.md#select-a-workload) for identity requirements.
+RakNet is an optional SDK dependency. Include `bedrock-bot[raknet]==0.1.0` in the
+requirements supplied to `bots build` or `bots fetch` when installing a RakNet
+workload. The adapter wheel also exposes a `raknet` extra for direct package
+installation.
+
+Use `configs/smoke-python.toml` or `configs/spread-100-python.toml` for Python over
+NetherNet with managed local identity. Use `configs/smoke-python-raknet.toml` or
+`configs/spread-100-python-raknet.toml` for Python over RakNet with configured
+identity. See the [Python guide](python/README.md#select-a-workload) for details.
 
 ### Protocol 1001
 
@@ -90,8 +96,8 @@ Type `quit` or end stdin to stop. `-version` prints build information;
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-addr HOST:PORT` | required | Server address; no default port. |
-| `-transport` | `raknet` (Go), `nethernet` (Python) | Python requires NetherNet. |
-| `-server-key-sha256` | empty | Required verified server identity pin for Python. |
+| `-transport` | `raknet` (Go), `nethernet` (Python) | Python supports both transports for protocol 2193. |
+| `-server-key-sha256` | empty | Required for configured Python NetherNet; optional for Python RakNet. |
 | `-n` | 1 | Number of bots. |
 | `-prefix` | `b` | Names use prefix plus an index of at least two digits. |
 | `-stagger` | 300ms | Time between first join starts. |
@@ -162,10 +168,11 @@ join attempts and login traffic do not contribute. Promoted pre-spawn applicatio
 packets count only after that attempt spawns. Application counters exclude
 incoming Disconnect packets.
 
-RakNet byte counters measure UDP payloads, including framing and resends.
+Go RakNet byte counters measure UDP payloads, including framing and resends.
 NetherNet byte counts are unknown: Python emits `null`; Go emits zero, which must
-not be interpreted as measured zero. Socket closure is a drop, not a decode
-error. Decode errors invalidate a benchmark run.
+not be interpreted as measured zero. The Python SDK does not expose transport
+bytes and emits `null` for either transport. Socket closure is a drop, not a
+decode error. Decode errors invalidate a benchmark run.
 
 | Event | Meaning and principal fields |
 | --- | --- |

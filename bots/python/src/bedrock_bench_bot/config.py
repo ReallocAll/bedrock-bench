@@ -89,8 +89,8 @@ class Config:
     version: bool = False
 
     def validate(self):
-        if self.transport != "nethernet":
-            raise UsageError("-transport must be nethernet; this frontend supports protocol 2193 only")
+        if self.transport not in ("nethernet", "raknet"):
+            raise UsageError("-transport must be nethernet or raknet; this frontend supports protocol 2193 only")
         if self.control:
             raise UsageError("-control is not supported; stdin accepts plain quit and EOF")
         try:
@@ -109,8 +109,12 @@ class Config:
             valid_addr = False
         if not valid_addr:
             raise UsageError("-addr must be HOST:PORT (IPv6 addresses must be bracketed)")
-        if not re.fullmatch(r"[0-9a-fA-F]{64}", self.server_key_sha256):
+        if self.transport == "nethernet" and not re.fullmatch(r"[0-9a-fA-F]{64}", self.server_key_sha256):
             raise UsageError("-server-key-sha256 requires the server's 64 hexadecimal SHA-256 fingerprint")
+        if self.transport == "raknet" and self.server_key_sha256 and not re.fullmatch(
+            r"[0-9a-fA-F]{64}", self.server_key_sha256
+        ):
+            raise UsageError("-server-key-sha256 must be empty or a 64 hexadecimal SHA-256 fingerprint")
         if self.n < 1 or not 0 <= self.probe_bots <= self.n:
             raise UsageError("-n must be at least 1 and -probe-bots must be in 0..n")
         if not self.prefix or any(c in self.prefix for c in ' \t\r\n"'):

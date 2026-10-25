@@ -70,6 +70,7 @@ def selection(endpoint="http://[::1]:19672"):
     "settings,message",
     [
         ({"implementation": "go"}, "requires Python and NetherNet"),
+        ({"transport": "raknet"}, "requires Python and NetherNet"),
         ({"server_key_sha256": "b" * 64}, "mutually exclusive"),
         ({"server_key_source": "auto"}, "must be one of"),
     ],

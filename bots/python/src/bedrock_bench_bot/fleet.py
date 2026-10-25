@@ -129,7 +129,8 @@ class Fleet:
         config = self.config
         timeout = math.ceil(config.spawn_timeout * 1000)
         options = dict(
-            server_url="http://" + config.addr,
+            server_url=("http://" if config.transport == "nethernet" else "raknet://") + config.addr,
+            transport=config.transport,
             name=config.name(index),
             uuid=bot_uuid(config.identity_seed, config.name(index)),
             protocol=2193,

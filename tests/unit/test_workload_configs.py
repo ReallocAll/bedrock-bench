@@ -40,7 +40,12 @@ def full_config() -> str:
 @pytest.mark.parametrize("name", RUNNABLE)
 def test_every_config_loads(name: str) -> None:
     w = config.load_workload(CONFIGS / f"{name}.toml")
-    bases = {"smoke-python": ("smoke", "spread"), "spread-100-python": ("spread-100", "spread")}
+    bases = {
+        "smoke-python": ("smoke", "spread"),
+        "spread-100-python": ("spread-100", "spread"),
+        "smoke-python-raknet": ("smoke", "spread"),
+        "spread-100-python-raknet": ("spread-100", "spread"),
+    }
     assert w.name == name and w.base == bases.get(name, ("spread",))
     assert tuple(p.name for p in w.phases) == PHASES
     assert w.grid.spacing > 2 * 16 * w.server.view_distance, "neighbouring bots would share chunks"
@@ -69,6 +74,18 @@ def test_python_presets_change_only_client_selection_and_identity(base: str) -> 
     expected = config.load_workload(base).params
     expected["bots"].update(implementation="python", transport="nethernet", server_key_source="managed-local")
     assert config.load_workload(f"{base}-python").params == expected
+
+
+@pytest.mark.parametrize(
+    ("preset", "base"),
+    [("smoke-python-raknet", "smoke"), ("spread-100-python-raknet", "spread-100")],
+)
+def test_python_raknet_presets_use_configured_identity(preset: str, base: str) -> None:
+    expected = config.load_workload(base).params
+    expected["bots"].update(
+        implementation="python", transport="raknet", server_key_source="configured", server_key_sha256=""
+    )
+    assert config.load_workload(preset).params == expected
 
 
 def test_the_base_does_not_run_on_its_own() -> None:
@@ -161,10 +178,13 @@ def test_old_configs_default_to_go_raknet(configs: Callable[[str, str], Path]) -
     [
         ('implementation = "ruby"', "implementation: must be one of"),
         ('transport = "tcp"', "transport: must be one of"),
-        ('implementation = "python"', "requires transport='nethernet'"),
-        ('implementation = "python"\ntransport = "nethernet"', "requires a verified server_key_sha256"),
+        (
+            'implementation = "python"\ntransport = "nethernet"',
+            "Python NetherNet requires a verified server_key_sha256",
+        ),
         ('server_key_sha256 = "' + "a" * 64 + '"', "requires implementation='python'"),
         ('implementation = "python"\ntransport = "nethernet"\nserver_key_sha256 = "wrong"', "server_key_sha256"),
+        ('implementation = "python"\ntransport = "raknet"\nserver_key_sha256 = "wrong"', "server_key_sha256"),
     ],
 )
 def test_invalid_bot_selection(configs: Callable[[str, str], Path], settings: str, message: str) -> None:

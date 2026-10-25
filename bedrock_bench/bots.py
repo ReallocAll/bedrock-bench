@@ -139,8 +139,8 @@ def module_for_workload(protocol: int, params: BotParams, *, supports_nethernet:
         if not supports_nethernet:
             raise BotError("adapter has no supported NetherNet server configuration")
     if params.implementation == "python":
-        if protocol != 2193 or params.transport != "nethernet":
-            raise BotError("the Python bot requires protocol 2193 and transport='nethernet'")
+        if protocol != 2193:
+            raise BotError("the Python bot requires protocol 2193")
         return "python"
     return module_for_protocol(protocol)
 
