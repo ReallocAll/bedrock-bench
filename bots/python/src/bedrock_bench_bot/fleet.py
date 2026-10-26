@@ -470,6 +470,8 @@ class Fleet:
             input_counts[id(attempt)] = stats.play_packet_counts_out[144]
             rx.update(attempt.startup_rx)
             tx.update(attempt.startup_tx)
+            # Initial loading screens moved before SDK play; retain the Go frontend accounting window.
+            tx[312] += stats.packet_counts_out[312] - stats.play_packet_counts_out[312]
             # Login-inclusive SDK counters deliberately never feed application packet statistics.
             for output, values in ((rx, stats.play_packet_counts_in), (tx, stats.play_packet_counts_out)):
                 for packet_id, count in enumerate(values):
