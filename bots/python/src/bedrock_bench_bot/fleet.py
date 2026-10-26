@@ -349,7 +349,7 @@ class Fleet:
             attempt.radius = attempt.startup.radius
             attempt.startup_rx.update(attempt.startup.pending_rx)
             sent = attempt.bot.capture_statistics()
-            login_only = {193, 1, 4, 129, 8, 113}
+            login_only = {193, 1, 4, 129, 8, 113, 312}  # Initial loading-screen notifications belong to login.
             for packet_id, (total, play) in enumerate(
                 zip(sent.packet_counts_out, sent.play_packet_counts_out, strict=False)
             ):

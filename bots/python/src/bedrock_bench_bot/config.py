@@ -111,8 +111,10 @@ class Config:
             raise UsageError("-addr must be HOST:PORT (IPv6 addresses must be bracketed)")
         if self.transport == "nethernet" and not re.fullmatch(r"[0-9a-fA-F]{64}", self.server_key_sha256):
             raise UsageError("-server-key-sha256 requires the server's 64 hexadecimal SHA-256 fingerprint")
-        if self.transport == "raknet" and self.server_key_sha256 and not re.fullmatch(
-            r"[0-9a-fA-F]{64}", self.server_key_sha256
+        if (
+            self.transport == "raknet"
+            and self.server_key_sha256
+            and not re.fullmatch(r"[0-9a-fA-F]{64}", self.server_key_sha256)
         ):
             raise UsageError("-server-key-sha256 must be empty or a 64 hexadecimal SHA-256 fingerprint")
         if self.n < 1 or not 0 <= self.probe_bots <= self.n:
