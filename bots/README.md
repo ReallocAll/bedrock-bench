@@ -67,7 +67,7 @@ lookups, not explicitly requested Git/network sources. Build uses the same
 installer, dependency checks and installed-file identity capture. Direct adapter
 dependencies are pinned in its metadata; this is not a full transitive lock.
 
-RakNet is an optional SDK dependency. Include `bedrock-bot[raknet]==0.1.0` in the
+RakNet is an optional SDK dependency. Include `endpilot[raknet]==0.1.0` in the
 requirements supplied to `bots build` or `bots fetch` when installing a RakNet
 workload. The adapter wheel also exposes a `raknet` extra for direct package
 installation.

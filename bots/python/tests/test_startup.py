@@ -11,7 +11,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 from bedrock_bench_bot.startup import Startup
-from bedrock_bot import (
+from endpilot import (
     DecodeErrorEvent,
     PacketDecodedEvent,
     TickEvent,

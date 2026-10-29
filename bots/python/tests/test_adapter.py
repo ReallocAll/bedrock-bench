@@ -23,7 +23,7 @@ from bedrock_bench_bot.events import Emitter
 from bedrock_bench_bot.fleet import Fleet
 from bedrock_bench_bot.identity import _direct_source, distribution_identity
 from bedrock_bench_bot.workload import ChunkTracker, Walker, bot_uuid, in_view, subchunk_heights
-from bedrock_bot import (
+from endpilot import (
     BotState,
     DeathEvent,
     DimensionEvent,

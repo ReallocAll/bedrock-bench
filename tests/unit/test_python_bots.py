@@ -291,9 +291,9 @@ def test_fetch_installs_wheels_and_locate_detects_dependency_file_drift(
     wheels.mkdir()
     fixture_wheel(
         wheels,
-        "bedrock-bot",
+        "endpilot",
         "0.1.0",
-        {"bedrock_bot/__init__.py": "# fake native dependency\n", "bedrock_bot/data.bin": "actual resource bytes\n"},
+        {"endpilot/__init__.py": "# fake native dependency\n", "endpilot/data.bin": "actual resource bytes\n"},
     )
     fixture_wheel(
         wheels,
@@ -308,7 +308,7 @@ def test_fetch_installs_wheels_and_locate_detects_dependency_file_drift(
                 "import json\nfrom .identity import build_info\nprint(json.dumps(build_info()))\n"
             ),
         },
-        requires="Requires-Dist: bedrock-bot==0.1.0\n",
+        requires="Requires-Dist: endpilot==0.1.0\n",
     )
     binary = bots.fetch("python", root=tmp_path, python=sys.executable, find_links=[str(wheels)], no_index=True)
     assert binary.command(["-version"]) == [str(binary.path), "-I", "-m", "bedrock_bench_bot", "-version"]
@@ -317,9 +317,9 @@ def test_fetch_installs_wheels_and_locate_detects_dependency_file_drift(
     environment = binary.info["environment"]
     assert environment["interpreter"]["sha256"] == bots.sha256_file(binary.path)
     distributions = {item["name"]: item for item in environment["distributions"]}
-    assert distributions["bedrock-bot"]["version"] == "0.1.0"
-    assert "bedrock_bot/__init__.py" in distributions["bedrock-bot"]["files"]
-    assert "bedrock_bot/data.bin" in distributions["bedrock-bot"]["files"]
+    assert distributions["endpilot"]["version"] == "0.1.0"
+    assert "endpilot/__init__.py" in distributions["endpilot"]["files"]
+    assert "endpilot/data.bin" in distributions["endpilot"]["files"]
     assert "dependencies" not in binary.info and "python" not in binary.info
     record = binary.provenance(["-transport", "nethernet"])
     run_schema = config.load_schema("run")
@@ -332,23 +332,23 @@ def test_fetch_installs_wheels_and_locate_detects_dependency_file_drift(
         if sys.platform == "win32"
         else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
     )
-    dependency = site / "bedrock_bot/__init__.py"
+    dependency = site / "endpilot/__init__.py"
     dependency.write_text("# installed file changed without changing interpreter or version\n", encoding="utf-8")
     drifted = bots.locate("python", root=tmp_path)
     assert drifted.sha256 != binary.sha256
     assert drifted.source == "installed"
     assert drifted.info["environment"]["interpreter"] == environment["interpreter"]
-    resource = site / "bedrock_bot/data.bin"
+    resource = site / "endpilot/data.bin"
     resource.unlink()
     with pytest.raises(bots.BotError, match="-version failed"):
         bots.locate("python", root=tmp_path)
     resource.write_text("actual resource bytes\n", encoding="utf-8")
-    metadata = site / "bedrock_bot-0.1.0.dist-info/METADATA"
+    metadata = site / "endpilot-0.1.0.dist-info/METADATA"
     metadata.write_text(metadata.read_text().replace("Version: 0.1.0", "Version: 9.0"), encoding="utf-8")
-    with pytest.raises(bots.BotError, match="requires installed bedrock-bot"):
+    with pytest.raises(bots.BotError, match="requires installed endpilot"):
         bots.locate("python", root=tmp_path)
     incompatible = tmp_path / "incompatible-requirements.txt"
-    incompatible.write_text("bedrock-bot==9.9.9\n", encoding="utf-8")
+    incompatible.write_text("endpilot==9.9.9\n", encoding="utf-8")
     with pytest.raises(bots.ToolchainError, match="pip install failed with exit code"):
         bots.fetch(
             "python",

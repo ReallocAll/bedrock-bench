@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
-import bedrock_bot as api
+import endpilot as api
 import bedrock_protocol as bp
 import pytest
 from bedrock_bench_bot.config import Config

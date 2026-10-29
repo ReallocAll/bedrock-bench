@@ -6,8 +6,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import bedrock_bot as api
-from bedrock_bot import (
+import endpilot as api
+from endpilot import (
     BotState,
     EventKind,
     PacketDecodedEvent,

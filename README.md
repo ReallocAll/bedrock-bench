@@ -53,7 +53,7 @@ the client machine cannot sustain 100 bots. Compare results only within the same
 workload, machine and placement settings.
 
 The default client is Go over RakNet. Go also supports NetherNet; the optional
-[Python client](bots/python/README.md) uses the installed `bedrock-bot` SDK over
+[Python client](bots/python/README.md) uses the installed `endpilot` SDK over
 NetherNet or RakNet. [Load bot documentation](bots/README.md) describes flags,
 accounting and implementation differences.
 

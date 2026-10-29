@@ -1,7 +1,7 @@
 # Python load client
 
 `bedrock-bench-bot` runs protocol 2193 benchmark players over NetherNet or RakNet
-using the `bedrock-bot` SDK. It follows the shared [load bot workload](../README.md),
+using the `endpilot` SDK. It follows the shared [load bot workload](../README.md),
 including movement, chunk requests, startup accounting and JSON events.
 
 It supports Python 3.12+ on Windows and Linux with compatible native protocol
@@ -79,7 +79,7 @@ or Endstone adapter.
 
 The inherited `configs/smoke-python-raknet.toml` and
 `configs/spread-100-python-raknet.toml` presets select RakNet and configured
-identity with an empty digest. Install `bedrock-bot[raknet]==0.1.0` alongside the
+identity with an empty digest. Install `endpilot[raknet]==0.1.0` alongside the
 adapter when using them. The existing Python presets continue to use NetherNet
 and managed local identity.
 
@@ -119,7 +119,7 @@ reconnected automatically. `-join-retries` applies only to failed first joins.
 The adapter owns benchmark policy; general connection and gameplay behavior
 belongs in the SDK. Preserve the shared event schema, accounting windows and
 workload when changing either implementation. See the
-[SDK API guide](https://github.com/ReallocAll/bedrock-bot/blob/main/docs/api.md)
+[SDK API guide](https://github.com/ReallocAll/endpilot/blob/main/docs/api.md)
 for SDK lifetime and error contracts.
 
 In an isolated environment with compatible SDK/protocol wheels available, install
@@ -129,8 +129,8 @@ tests from the benchmark repository root:
 ```shell
 python -m pip install build .
 python -m build bots/python --outdir bots/python/dist
-python -m pip install --find-links ../bedrock-bot/dist --find-links ../bedrock-protocol/dist "bots/python/dist/bedrock_bench_bot-0.1.0.dev0-py3-none-any.whl[test]"
-python -I -m pytest bots/python/tests --sdk-source ../bedrock-bot-test-source/bedrock_bot-0.1.0
+python -m pip install --find-links ../endpilot/dist --find-links ../bedrock-protocol/dist "bots/python/dist/bedrock_bench_bot-0.1.0.dev0-py3-none-any.whl[test]"
+python -I -m pytest bots/python/tests --sdk-source ../endpilot-test-source/endpilot-0.1.0
 ```
 
 Adjust wheel filenames and paths to your build. `--sdk-source` is required for the

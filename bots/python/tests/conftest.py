@@ -9,7 +9,7 @@ import pytest
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--sdk-source", type=Path, help="Extracted bedrock-bot sdist (or SDK checkout for focused local tests)"
+        "--sdk-source", type=Path, help="Extracted endpilot sdist (or SDK checkout for focused local tests)"
     )
 
 
@@ -17,7 +17,7 @@ def pytest_addoption(parser):
 def sdk_peer(pytestconfig):
     source = pytestconfig.getoption("sdk_source")
     if source is None:
-        raise pytest.UsageError("SDK integration requires --sdk-source pointing to the extracted bedrock-bot sdist")
+        raise pytest.UsageError("SDK integration requires --sdk-source pointing to the extracted endpilot sdist")
     peer = source.resolve() / "tests/python/peer.py"
     fixture = peer.parent / "fixtures/start_game_2193.bin"
     for path in (peer, fixture):

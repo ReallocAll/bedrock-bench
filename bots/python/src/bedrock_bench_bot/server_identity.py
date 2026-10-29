@@ -126,7 +126,7 @@ async def probe(pid: int, created: float, listener: Listener, timeout: float = 1
     owned_listener(pid, created, listener)
     import aiohttp
     from aiortc import RTCIceServer
-    from bedrock_bot.auth import create_identity
+    from endpilot.auth import create_identity
     from nethernet.identity import (
         IdentitySigner,
         build_envelope,

@@ -116,14 +116,14 @@ def build_info() -> dict:
 
 def load_sdk():
     """Require an installed SDK and ensure Python imported the installed distribution's file."""
-    distribution = metadata.distribution("bedrock-bot")
+    distribution = metadata.distribution("endpilot")
     if distribution.version != "0.1.0":
-        raise RuntimeError(f"bedrock-bot==0.1.0 is required; installed {distribution.version}")
-    sdk = importlib.import_module("bedrock_bot")
+        raise RuntimeError(f"endpilot==0.1.0 is required; installed {distribution.version}")
+    sdk = importlib.import_module("endpilot")
     actual = Path(sdk.__file__).resolve()
     owned = {Path(distribution.locate_file(file)).resolve() for file in distribution.files or ()}
     if actual not in owned:
-        raise RuntimeError(f"bedrock_bot imported outside its installed distribution: {actual}")
+        raise RuntimeError(f"endpilot imported outside its installed distribution: {actual}")
     return sdk
 
 

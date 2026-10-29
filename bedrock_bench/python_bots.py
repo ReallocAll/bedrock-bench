@@ -31,7 +31,7 @@ PACKAGE = "bedrock-bench-bot"
 VERSION = "0.1.0.dev0"
 WHEEL_NAME = f"bedrock_bench_bot-{VERSION}-py3-none-any.whl"
 DEFAULT_PYTHON = "3.12"
-NATIVE_PACKAGE = "bedrock-bot"
+NATIVE_PACKAGE = "endpilot"
 NATIVE_VERSION = "0.1.0"
 
 

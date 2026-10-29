@@ -9,13 +9,13 @@ description = "Installed protocol 2193 benchmark frontend for bedrock-bench"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-dependencies = ["bedrock-bot==0.1.0", "psutil==7.2.2", "uvloop==0.23.0; platform_system == 'Linux'"]
+dependencies = ["endpilot==0.1.0", "psutil==7.2.2", "uvloop==0.23.0; platform_system == 'Linux'"]
 
 [project.scripts]
 bedrock-bench-bot = "bedrock_bench_bot.cli:main"
 
 [project.optional-dependencies]
-raknet = ["bedrock-bot[raknet]==0.1.0"]
+raknet = ["endpilot[raknet]==0.1.0"]
 test = ["pytest>=8", "jsonschema>=4"]
 
 [tool.hatch.build.targets.wheel]
